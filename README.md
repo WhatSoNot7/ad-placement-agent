@@ -1,0 +1,71 @@
+# 📊 Ad Placement Planning Agent
+
+AI-агент для автоматизации процесса корректировок ежемесячного плана размещения рекламы домашнего интернета.
+
+## Задача
+
+Автоматизировать взаимодействие между ответственными сотрудниками (editors) и руководителем (approver) в процессе подготовки плана рекламного размещения:
+- Выгрузка плана по запросу
+- Приём и валидация корректировок
+- Пересчёт прогноза заявок
+- Формирование сравнительного анализа
+- Финализация плана
+
+## Архитектура
+
+Conversational AI-агент на базе LangGraph с ролевой моделью доступа.
+
+### Пользователи
+
+| Роль | Возможности |
+|------|-------------|
+| Editor | Запрос плана, отправка корректировок, просмотр статуса |
+| Approver | Всё вышеперечисленное + утверждение/отклонение корректировок + финализация плана |
+
+### Tools
+
+| Tool | Внешняя система | Назначение |
+|------|-----------------|------------|
+| `query_plan_db` | PostgreSQL | Запрос данных плана |
+| `export_plan_to_excel` | Файловая система | Формирование .xlsx |
+| `validate_corrections_file` | PostgreSQL + файл | Валидация корректировок |
+| `run_forecast_model` | Python (mock) | Пересчёт прогноза |
+| `send_notification` | Мессенджер (mock) | Уведомления |
+| `get_deadline_info` | PostgreSQL | Проверка дедлайнов |
+| `save_final_plan` | PostgreSQL | Сохранение итогового плана |
+
+### Блок-схема графа
+
+```mermaid
+graph TD
+    START([START]) --> receive_message
+    receive_message --> identify_user
+    identify_user --> classify_intent
+
+    classify_intent --> check_permissions{Роль позволяет?}
+    check_permissions -->|denied| respond_denied([Access Denied])
+
+    check_permissions -->|allowed| route_intent{Intent?}
+
+    route_intent -->|get_plan| check_plan{План в БД?}
+    check_plan -->|exists| export_excel([Отправить Excel])
+    check_plan -->|not_ready| respond_early([Ещё рано])
+    check_plan -->|not_found| offer_notify([Уведомить автора])
+
+    route_intent -->|submit_corrections| check_deadline{Дедлайн?}
+    check_deadline -->|passed| respond_deadline([Дедлайн прошёл])
+    check_deadline -->|ok| validate_excel{Файл валиден?}
+    validate_excel -->|errors| respond_errors([Список ошибок])
+    validate_excel -->|valid| recalculate --> comparison([Сравнение + notify approver])
+
+    route_intent -->|approve_plan| check_all{Все корректировки?}
+    check_all -->|не все| partial_decision{Решение по филиалу}
+    partial_decision -->|approve| approve_branch([Принять])
+    partial_decision -->|reject| reject_branch([Отклонить])
+    partial_decision -->|modify| request_modify([Доработать])
+    check_all -->|все получены| finalize_decision{Финализация}
+    finalize_decision -->|approve| finalize([Сохранить план])
+    finalize_decision -->|reject| reject_all([Откат])
+
+    route_intent -->|ask_status| respond_status([Статус])
+    route_intent -->|unclear| respond_clarify([Уточните])
