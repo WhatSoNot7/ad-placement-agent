@@ -23,7 +23,7 @@ from src.tools.excel_export import export_plan_to_excel
 from src.tools.validate_corrections import validate_corrections_file
 from src.tools.deadlines import get_deadline_info
 from src.tools.notifications import send_notification
-from src.tools.mock_forecast import recalculate_with_corrections
+from src.models.mock_forecast import recalculate_with_corrections
 from src.llm import get_llm
 
 logger = logging.getLogger(__name__)
