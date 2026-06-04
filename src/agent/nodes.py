@@ -61,7 +61,7 @@ def identify_user(state: AgentState) -> dict:
 # NODE: classify_intent (STRUCTURED OUTPUT + RETRY)
 # ============================================================
 
-async def classify_intent(state: AgentState) -> dict:
+def classify_intent(state: AgentState) -> dict:
     """
     Классификация намерения через StructuredOutputHandler.
 
@@ -148,7 +148,7 @@ def check_permissions(state: AgentState) -> dict:
 # Ветвление: exists / not_ready / not_found
 # ============================================================
 
-async def handle_get_plan(state: AgentState) -> dict:
+def handle_get_plan(state: AgentState) -> dict:
     """
     Получение плана размещения.
 
@@ -238,7 +238,7 @@ async def handle_get_plan(state: AgentState) -> dict:
 # Затем: errors / valid
 # ============================================================
 
-async def handle_submit_corrections(state: AgentState) -> dict:
+def handle_submit_corrections(state: AgentState) -> dict:
     """
     Приём и валидация корректировок.
 
@@ -421,7 +421,7 @@ async def handle_submit_corrections(state: AgentState) -> dict:
 # NODE: handle_ask_status
 # ============================================================
 
-async def handle_ask_status(state: AgentState) -> dict:
+def handle_ask_status(state: AgentState) -> dict:
     """
     Информирование о статусе процесса и дедлайнах.
     """
@@ -487,7 +487,7 @@ async def handle_ask_status(state: AgentState) -> dict:
 # ВЕТВЛЕНИЕ 4: Решение руководителя
 # ============================================================
 
-async def handle_approve_plan(state: AgentState) -> dict:
+def handle_approve_plan(state: AgentState) -> dict:
     """
     Утверждение/отклонение корректировок руководителем.
 
@@ -620,7 +620,7 @@ async def handle_approve_plan(state: AgentState) -> dict:
     )
 
 
-async def _execute_approval_decision(
+def _execute_approval_decision(
     decision: str,
     state: AgentState,
     request_id: str,
@@ -835,7 +835,7 @@ def handle_unclear(state: AgentState) -> dict:
 # но не сформировали готовый response
 # ============================================================
 
-async def generate_response(state: AgentState) -> dict:
+def generate_response(state: AgentState) -> dict:
     """
     Генерация финального ответа через StructuredOutputHandler.
 

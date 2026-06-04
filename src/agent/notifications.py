@@ -2,7 +2,6 @@
 
 import logging
 import smtplib
-import asyncio
 import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -12,7 +11,7 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 
-async def send_error_notification(
+def send_error_notification_sync(
     developer_email: str,
     request_id: str,
     operation: str,
@@ -23,7 +22,7 @@ async def send_error_notification(
     """
     Отправить email-уведомление разработчику об ошибке.
 
-    Запускается в отдельном потоке, чтобы не блокировать event loop.
+    Синхронная версия — вызывается напрямую из _graceful_degradation.
     """
 
     subject = f"[AD-PLACEMENT-AGENT] Ошибка: {operation} | {request_id}"
@@ -50,8 +49,7 @@ async def send_error_notification(
 {traceback_str[:3000]}
 """
 
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _send_email_sync, developer_email, subject, body)
+    _send_email_sync(developer_email, subject, body)
 
 
 def _send_email_sync(to_email: str, subject: str, body: str) -> None:
@@ -68,7 +66,7 @@ def _send_email_sync(to_email: str, subject: str, body: str) -> None:
             "SMTP credentials не настроены. Email-уведомление не отправлено. "
             "Установите SMTP_USER и SMTP_PASSWORD."
         )
-        # Fallback: логируем ошибку в файл, если email не настроен
+        # Fallback: логируем ошибку, если email не настроен
         logger.error(f"[NOTIFICATION FALLBACK] To: {to_email} | Subject: {subject}\n{body}")
         return
 
@@ -86,7 +84,7 @@ def _send_email_sync(to_email: str, subject: str, body: str) -> None:
         logger.info(f"Уведомление об ошибке отправлено на {to_email}")
     except smtplib.SMTPAuthenticationError as e:
         logger.error(f"Ошибка аутентификации SMTP: {e}")
-    except smtplib.SMTPConnectError as e:
+    except ConnectionRefusedError as e:
         logger.error(f"Не удалось подключиться к SMTP серверу: {e}")
     except smtplib.SMTPException as e:
         logger.error(f"Ошибка SMTP при отправке уведомления: {e}")

@@ -14,7 +14,7 @@ from src.agent.schemas import (
     AgentResponse,
     ErrorResponse,
 )
-from src.agent.notifications import send_error_notification
+from src.agent.notifications import send_error_notification_sync
 from src.agent.prompts import CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class StructuredOutputHandler:
             strict=True,
         )
     
-    async def classify_intent(
+    def classify_intent(
         self,
         user_message: str,
         user_role: str,
@@ -71,14 +71,14 @@ class StructuredOutputHandler:
             HumanMessage(content=prompt),
         ]
         
-        return await self._invoke_with_retry(
+        return self._invoke_with_retry(
             schema=IntentClassification,
             messages=messages,
             request_id=request_id,
             operation="classify_intent",
         )
     
-    async def generate_response(
+    def generate_response(
         self,
         user_role: str,
         user_branch: str,
@@ -107,14 +107,14 @@ class StructuredOutputHandler:
             HumanMessage(content=prompt),
         ]
         
-        return await self._invoke_with_retry(
+        return self._invoke_with_retry(
             schema=AgentResponse,
             messages=messages,
             request_id=request_id,
             operation="generate_response",
         )
     
-    async def _invoke_with_retry(
+    def _invoke_with_retry(
         self,
         schema: Type[BaseModel],
         messages: list,
@@ -137,7 +137,7 @@ class StructuredOutputHandler:
                     f"[{request_id}] {operation}: попытка {attempt + 1}/{total_attempts}"
                 )
                 
-                response = await structured_llm.ainvoke(messages)
+                response = structured_llm.invoke(messages)
                 
                 # Дополнительная бизнес-валидация
                 self._validate_business_rules(response, operation)
@@ -157,7 +157,7 @@ class StructuredOutputHandler:
                     continue
         
         # Все попытки исчерпаны → graceful degradation
-        return await self._graceful_degradation(
+        return self._graceful_degradation(
             request_id=request_id,
             operation=operation,
             error=last_error,
@@ -187,7 +187,7 @@ class StructuredOutputHandler:
                     f"Ответ со статусом success слишком короткий: '{response.message}'"
                 )
     
-    async def _graceful_degradation(
+    def _graceful_degradation(
         self,
         request_id: str,
         operation: str,
@@ -195,16 +195,16 @@ class StructuredOutputHandler:
         messages: list,
     ) -> ErrorResponse:
         """Graceful degradation: уведомляем пользователя и разработчика."""
-        
+
         logger.error(
             f"[{request_id}] {operation}: все попытки исчерпаны. "
-            f"Последняя ошибка: {type(error).__name__}: {error}"
+            f"Последняя ошибка: {type(error).__name__ if error else 'Unknown'}: {error}"
         )
-        
-        # Отправляем уведомление разработчику
+
+        # Отправляем уведомление разработчику (синхронно)
         if self.developer_email:
             try:
-                await send_error_notification(
+                _send_error_notification_sync(
                     developer_email=self.developer_email,
                     request_id=request_id,
                     operation=operation,
@@ -217,7 +217,7 @@ class StructuredOutputHandler:
                 logger.error(
                     f"[{request_id}] Не удалось отправить уведомление: {notify_err}"
                 )
-        
+
         return ErrorResponse(
             success=False,
             message=(
