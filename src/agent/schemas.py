@@ -1,6 +1,6 @@
 """Pydantic-схемы для structured output агента."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from enum import Enum
 
@@ -22,9 +22,17 @@ class IntentClassification(BaseModel):
     target_month: Optional[str] = Field(
         None,
         pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
-        description="Целевой месяц в формате YYYY-MM, если указан"
+        description="Целевой месяц в формате YYYY-MM. Обязателен для get_plan и submit_corrections. Для остальных интентов — null."
     )
     reasoning: str = Field(..., description="Краткое обоснование выбора намерения")
+
+    @field_validator("target_month", mode="before")
+    @classmethod
+    def parse_null_string(cls, v):
+        """Конвертировать строку 'null' в None."""
+        if isinstance(v, str) and v.lower() in ("null", "none", ""):
+            return None
+        return v
 
 
 # === Схема для ответа пользователю ===
