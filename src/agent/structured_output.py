@@ -39,7 +39,7 @@ class StructuredOutputHandler:
         """Создать LLM с привязкой к конкретной Pydantic-схеме."""
         return self.llm.with_structured_output(
             schema,
-            method="json_schema",
+            method="function_calling",  # вместо "json_schema"
             strict=True,
         )
     
@@ -205,7 +205,7 @@ class StructuredOutputHandler:
         # Отправляем уведомление разработчику (синхронно)
         if self.developer_email:
             try:
-                _send_error_notification_sync(
+                send_error_notification_sync(
                     developer_email=self.developer_email,
                     request_id=request_id,
                     operation=operation,
