@@ -112,7 +112,7 @@ def create_graph():
     graph.add_node("handle_approve_plan", handle_approve_plan)
     graph.add_node("handle_unclear", handle_unclear)
     # генерация ответа
-    graph.add_node("generate_response", generate_response_node)
+    graph.add_node("generate_response", generate_response)
 
     graph.set_entry_point("identify_user")
     graph.add_edge("identify_user", "classify_intent")
