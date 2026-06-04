@@ -69,6 +69,7 @@ graph TD
 
     route_intent -->|ask_status| respond_status([Статус])
     route_intent -->|unclear| respond_clarify([Уточните])
+```
 
 ## Быстрый старт
 
