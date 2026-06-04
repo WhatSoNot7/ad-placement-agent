@@ -1,14 +1,14 @@
 """Streamlit UI для чат-бота."""
 
 import streamlit as st
-import asyncio
 import sys
 import os
+import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.agent.graph import create_graph
-from src.agent.state import AgentState
+from src.agent import create_graph, AgentState
+from src.agent.schemas import AgentResponse, ErrorResponse
 
 
 st.set_page_config(
@@ -25,22 +25,23 @@ st.caption("Чат-бот для работы с планами размещен
 st.sidebar.header("Настройки")
 
 USER_OPTIONS = {
-    "editor_nsk_01": "Иванов И.И. (Editor, Новосибирск)",
-    "editor_kzn_01": "Петрова А.С. (Editor, Казань)",
-    "editor_msk_01": "Сидоров К.В. (Editor, Москва)",
-    "approver_01": "Козлова М.Н. (Approver, HQ)",
+    "editor_nsk_01": {"label": "Иванов И.И. (Editor, Новосибирск)", "role": "editor", "branch": "novosibirsk"},
+    "editor_kzn_01": {"label": "Петров П.П. (Editor, Казань)", "role": "editor", "branch": "kazan"},
+    "editor_msk_01": {"label": "Сидоров С.С. (Editor, Москва)", "role": "editor", "branch": "moscow"},
+    "approver_01": {"label": "Щербаков С.А. (Approver, HQ)", "role": "manager", "branch": "hq"},
 }
 
 selected_user = st.sidebar.selectbox(
     "Пользователь:",
     options=list(USER_OPTIONS.keys()),
-    format_func=lambda x: USER_OPTIONS[x],
+    format_func=lambda x: USER_OPTIONS[x]["label"],
 )
 
+user_info = USER_OPTIONS[selected_user]
+
 st.sidebar.divider()
-st.sidebar.markdown(
-    f"**Роль:** `{'approver' if 'approver' in selected_user else 'editor'}`"
-)
+st.sidebar.markdown(f"**Роль:** `{user_info['role']}`")
+st.sidebar.markdown(f"**Филиал:** `{user_info['branch']}`")
 
 
 # --- Chat history ---
@@ -71,43 +72,76 @@ if prompt := st.chat_input("Введите сообщение..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Prepare state
-    initial_state: AgentState = {
-        "messages": [{"role": "user", "content": prompt}],
-        "user_id": selected_user,
-        "user_role": None,
-        "user_branch": None,
-        "intent": None,
-        "permission_granted": False,
-        "target_month": None,
-        "plan_exists": None,
-        "plan_data": None,
-        "deadline_ok": None,
-        "corrections_file_content": None,
-        "validation_result": None,
-        "adjusted_plan": None,
-        "comparison_report": None,
-        "budget_delta": None,
-        "leads_delta": None,
-        "approval_status": None,
-        "branch_statuses": {},
-        "all_corrections_received": False,
-        "ready_to_finalize": False,
-        "iteration": 0,
-    }
+    # Parse file if attached
+    corrections_file_content = None
+    has_attachment = False
+    file_path = None
 
-    # Handle file attachment
     if uploaded_file is not None:
         import openpyxl
         import io
 
+        has_attachment = True
+        # Сохраняем файл для tool
+        file_path = f"data/uploads/{uploaded_file.name}"
+        os.makedirs("data/uploads", exist_ok=True)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.read())
+        uploaded_file.seek(0)
+
+        # Парсим для state
         wb = openpyxl.load_workbook(io.BytesIO(uploaded_file.read()))
         ws = wb.active
         headers = [cell.value for cell in ws[1]]
         rows = []
         for row in ws.iter_rows(min_row=2, values_only=True):
             rows.append(dict(zip(headers, row)))
-        initial_state["corrections_file_content"] = rows
+        corrections_file_content = rows
+
+    # Prepare state
+    initial_state: AgentState = {
+        # Пользователь
+        "user_id": selected_user,
+        "user_role": user_info["role"],
+        "user_branch": user_info["branch"],
+        "has_attachment": has_attachment,
+        "file_path": file_path,
+        "messages": [{"role": "user", "content": prompt}],
+
+        # Роутинг
+        "intent": None,
+        "permission_granted": False,
+
+        # Structured output
+        "intent_data": None,
+        "response": None,
+
+        # План
+        "target_month": None,
+        "plan_exists": None,
+        "plan_data": None,
+
+        # Дедлайн
+        "deadline_ok": None,
+        "deadline_info": None,
+
+        # Валидация корректировок
+        "validation_passed": None,
+        "validation_errors": None,
+        "corrections_data": None,
+        "corrections_file_content": corrections_file_content,
+
+        # Approve flow
+        "all_corrections_received": None,
+        "approval_status": None,
+        "approval_decision": None,
+        "rejection_reason": None,
+
+        # Мета
+        "request_id": str(uuid.uuid4()),
+        "is_error": False,
+        "iteration": 0,
+    }
 
     # Run agent
     with st.chat_message("assistant"):
@@ -115,32 +149,47 @@ if prompt := st.chat_input("Введите сообщение..."):
             try:
                 result = st.session_state.graph.invoke(initial_state)
 
-                # Extract response
-                if result.get("messages"):
-                    last_msg = result["messages"][-1]
-                    if hasattr(last_msg, "content"):
-                        response = last_msg.content
-                    else:
-                        response = str(last_msg.get("content", ""))
-                else:
-                    response = "Не удалось получить ответ."
+                # Извлекаем structured response
+                response_obj = result.get("response")
 
-                st.markdown(response)
+                if isinstance(response_obj, AgentResponse):
+                    response_text = response_obj.message
+
+                    # Показываем next_steps если есть
+                    if response_obj.next_steps:
+                        steps = "\n".join(f"  • {s}" for s in response_obj.next_steps)
+                        response_text += f"\n\n**Следующие шаги:**\n{steps}"
+
+                elif isinstance(response_obj, ErrorResponse):
+                    response_text = f"⚠️ {response_obj.message}"
+
+                elif response_obj is None:
+                    # Fallback: берём из messages (старый формат)
+                    msgs = result.get("messages", [])
+                    if msgs:
+                        last_msg = msgs[-1]
+                        response_text = last_msg.get("content", "Не удалось получить ответ.")
+                    else:
+                        response_text = "Не удалось получить ответ."
+                else:
+                    response_text = str(response_obj)
+
+                st.markdown(response_text)
                 st.session_state.messages.append(
-                    {"role": "assistant", "content": response}
+                    {"role": "assistant", "content": response_text}
                 )
 
-                # Show file download if available
-                if result.get("plan_data") and result.get("plan_exists"):
-                    st.download_button(
-                        label="📥 Скачать план (Excel)",
-                        data=open(
-                            f"data/exports/plan_{result.get('user_branch')}_{result.get('target_month')}.xlsx",
-                            "rb",
-                        ).read(),
-                        file_name=f"plan_{result.get('target_month')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
+                # Show file download if plan was exported
+                if result.get("plan_exists") and result.get("plan_data"):
+                    export_path = f"data/exports/plan_{user_info['branch']}_{result.get('target_month')}.xlsx"
+                    if os.path.exists(export_path):
+                        with open(export_path, "rb") as f:
+                            st.download_button(
+                                label="📥 Скачать план (Excel)",
+                                data=f.read(),
+                                file_name=f"plan_{result.get('target_month')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
 
             except Exception as e:
                 error_msg = f"⚠️ Ошибка: {str(e)}"
