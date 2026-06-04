@@ -162,6 +162,18 @@ def handle_get_plan(state: AgentState) -> dict:
 
     logger.info(f"[{request_id}] Getting plan: branch={branch}, month={target_month}")
 
+    # Если target_month не определён — запрашиваем уточнение
+    if target_month is None:
+        return {
+            "plan_exists": None,
+            "plan_data": None,
+            "tool_result": (
+                "Не удалось определить целевой месяц. "
+                "Пожалуйста, уточните, за какой конкретный месяц вы хотите получить план размещения "
+                "(например, «план на июнь 2025» или «план на 2025-06»)."
+            ),
+        }
+
     try:
         plan_result = query_plan_db.invoke({
             "branch": branch,
@@ -194,7 +206,7 @@ def handle_get_plan(state: AgentState) -> dict:
                 "plan_exists": False,
                 "plan_data": None,
                 "tool_result": (
-                    f"План на {target_month or 'запрошенный месяц'} ещё не сформирован. "
+                    f"План на {target_month} ещё не сформирован. "
                     f"Обычно планы появляются после 20-го числа предыдущего месяца. "
                     f"Ожидайте."
                 ),
@@ -203,7 +215,9 @@ def handle_get_plan(state: AgentState) -> dict:
         else:
             # not_found — план должен быть, но его нет
             # Предлагаем уведомить автора модели
+            user_id = state.get("user_id", "unknown")
             send_notification.invoke({
+                "recipient_id": user_id,
                 "recipient_role": "model_author",
                 "branch": branch,
                 "message": (
@@ -216,7 +230,7 @@ def handle_get_plan(state: AgentState) -> dict:
                 "plan_exists": False,
                 "plan_data": None,
                 "tool_result": (
-                    f"План для филиала '{branch}' на {target_month or 'текущий месяц'} "
+                    f"План для филиала '{branch}' на {target_month} "
                     f"не найден в базе данных. "
                     f"Автор модели уведомлён о проблеме."
                 ),
