@@ -21,7 +21,7 @@ from src.agent.prompts import SYSTEM_PROMPT, CLASSIFY_INTENT_PROMPT, RESPONSE_PR
 from src.tools.plan_db import query_plan_db
 from src.tools.excel_export import export_plan_to_excel
 from src.tools.validate_corrections import validate_corrections_file
-from src.tools.deadline_tracker import get_deadline_info
+from src.tools.deadlines import get_deadline_info
 from src.tools.notifications import send_notification
 from src.tools.mock_forecast import recalculate_with_corrections
 from src.llm import get_llm
