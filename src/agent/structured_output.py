@@ -16,6 +16,7 @@ from src.agent.schemas import (
 )
 from src.agent.notifications import send_error_notification_sync
 from src.agent.prompts import CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT, SYSTEM_PROMPT
+from src.config import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class StructuredOutputHandler:
         max_retries: int = 2,
         developer_email: Optional[str] = None,
     ):
-        self.llm = ChatOpenAI(model=model_name, temperature=temperature)
+        self.llm = get_llm()
         self.max_retries = max_retries
         self.developer_email = developer_email
     
