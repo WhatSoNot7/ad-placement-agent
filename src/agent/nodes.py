@@ -79,7 +79,7 @@ def classify_intent(state: AgentState) -> dict:
             last_message = msg.get("content", "")
             break
 
-    result = await handler.classify_intent(
+    result = handler.classify_intent(
         user_message=last_message,
         user_role=state["user_role"],
         user_branch=state["user_branch"],
@@ -611,7 +611,7 @@ def handle_approve_plan(state: AgentState) -> dict:
         }
 
     # === Выполнение решения ===
-    return await _execute_approval_decision(
+    return _execute_approval_decision(
         decision=decision,
         state=state,
         request_id=request_id,
@@ -857,7 +857,7 @@ def generate_response(state: AgentState) -> dict:
     intent = state.get("intent", "unknown")
     tool_result = state.get("tool_result", "Нет данных")
 
-    result = await handler.generate_response(
+    result = handler.generate_response(
         user_role=state["user_role"],
         user_branch=state["user_branch"],
         action=intent,
