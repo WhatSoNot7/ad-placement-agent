@@ -69,3 +69,46 @@ graph TD
 
     route_intent -->|ask_status| respond_status([Статус])
     route_intent -->|unclear| respond_clarify([Уточните])
+
+## Быстрый старт
+
+### Предварительные требования
+- Docker и Docker Compose
+- Выбор LLM/API ключи (см. `.env.example`)
+
+### Запуск
+
+```bash
+# 1. Клонировать репозиторий
+git clone https://github.com/WhatSoNot7/ad-placement-agent.git
+cd ad-placement-agent
+
+# 2. Создать .env файл
+cp .env.example .env
+# Заполнить переменные окружения (см. ниже)
+
+# 3. Запустить
+docker-compose up --build
+
+# 4. Агент доступен по адресу:
+# http://localhost:8501 (UI, если есть Streamlit)
+
+
+
+### Чек-лист реализации
+
+| Требование | Статус |
+|-----------|--------|
+| AI-агент на LangGraph | ✅ Реализовано |
+| Нелинейный граф (≥2 точки ветвления) | ✅ Реализовано |
+| RAG | ⬜ Реализовано / ✅ Не применимо |
+| Минимум 3 tool | ✅ Реализовано |
+| Взаимодействие с внешней системой | ✅ Реализовано |
+| Benchmark (20 запросов) | ⬜ Планируется |
+| LangFuse трейсы | ⬜ Планируется |
+| Eval-кейсы (3 типа) | ⬜ Планируется |
+| Security checklist | ⬜ Планируется |
+| Docker Compose | ✅ Реализовано |
+| Structured Output (Pydantic) | ✅ Реализовано |
+| Graceful degradation при ошибках | ✅ Реализовано |
+| Email-уведомления разработчику | ✅ Реализовано |

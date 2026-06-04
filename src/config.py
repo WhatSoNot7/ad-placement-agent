@@ -29,7 +29,7 @@ def get_llm():
     elif provider == "openai_compatible":
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
-            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            model=os.getenv("LLM_MODEL", "glm-5"),
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
             temperature=0,

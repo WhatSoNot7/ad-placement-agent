@@ -1,18 +1,20 @@
 """Определение состояния агента."""
 
-from typing import TypedDict, Literal
+from typing import TypedDict, Literal, Optional
+
+from src.agent.schemas import IntentClassification, AgentResponse, ErrorResponse
 
 
 class AgentState(TypedDict):
-    # Сообщения чата
+    # === Пользователь ===
+    user_id: str
+    user_role: str  # "editor", "manager", "director"
+    user_branch: str
+    has_attachment: bool
+    file_path: str | None
     messages: list[dict]
 
-    # Пользователь
-    user_id: str
-    user_role: Literal["editor", "approver"] | None
-    user_branch: str | None
-
-    # Роутинг
+    # === Роутинг ===
     intent: Literal[
         "get_plan",
         "submit_corrections",
@@ -22,27 +24,38 @@ class AgentState(TypedDict):
     ] | None
     permission_granted: bool
 
-    # План
+    # === Structured Output: классификация ===
+    intent_data: IntentClassification | None  # полный объект от LLM
+
+    # === План ===
     target_month: str | None  # "2025-07"
     plan_exists: bool | None
     plan_data: list[dict] | None
 
-    # Корректировки
-    deadline_ok: bool | None
-    corrections_file_content: list[dict] | None
-    validation_result: dict | None
+    # === Дедлайн ===
+    deadline_ok: bool | None  # False если дедлайн прошёл
+    deadline_info: dict | None  # {"deadline_display": "...", "days_left": N, "is_passed": bool}
 
-    # Пересчёт
-    adjusted_plan: list[dict] | None
-    comparison_report: str | None
-    budget_delta: float | None
-    leads_delta: float | None
+    # === Валидация корректировок ===
+    validation_passed: bool | None
+    validation_errors: list[str] | None
+    corrections_data: list[dict] | None  # распарсенные данные из файла
 
-    # Финализация
-    approval_status: Literal["pending", "approved", "rejected", "modify"] | None
-    branch_statuses: dict  # {"Новосибирск": {"submitted": True, "approved": None}, ...}
-    all_corrections_received: bool
-    ready_to_finalize: bool
+    # === Approve flow ===
+    all_corrections_received: bool | None  # все ли филиалы прислали корректировки
+    approval_decision: Literal[
+        "approve_branch",
+        "reject_branch",
+        "request_modify",
+        "approve_all",
+        "reject_all",
+    ] | None
+    rejection_reason: str | None
 
-    # Мета
+    # === Финальный ответ (Structured Output) ===
+    response: AgentResponse | ErrorResponse | None
+
+    # === Мета ===
+    request_id: str
+    is_error: bool  # флаг graceful degradation
     iteration: int
