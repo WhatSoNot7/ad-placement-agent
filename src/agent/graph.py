@@ -12,6 +12,7 @@ from src.agent.nodes import (
     handle_ask_status,
     handle_approve_plan,
     handle_unclear,
+    generate_response,
 )
 
 
@@ -110,6 +111,8 @@ def create_graph():
     graph.add_node("handle_ask_status", handle_ask_status)
     graph.add_node("handle_approve_plan", handle_approve_plan)
     graph.add_node("handle_unclear", handle_unclear)
+    # генерация ответа
+    graph.add_node("generate_response", generate_response_node)
 
     graph.set_entry_point("identify_user")
     graph.add_edge("identify_user", "classify_intent")
@@ -142,11 +145,15 @@ def create_graph():
         },
     )
 
-    # Все обработчики ведут к END
-    graph.add_edge("handle_get_plan", END)
-    graph.add_edge("handle_submit_corrections", END)
-    graph.add_edge("handle_ask_status", END)
-    graph.add_edge("handle_approve_plan", END)
-    graph.add_edge("handle_unclear", END)
+   
+    # Все обработчики ведут к generate_response
+    graph.add_edge("handle_get_plan", "generate_response")
+    graph.add_edge("handle_submit_corrections", "generate_response")
+    graph.add_edge("handle_ask_status", "generate_response")
+    graph.add_edge("handle_approve_plan", "generate_response")
+    graph.add_edge("handle_unclear", "generate_response")
+    
+    # generate_response -> END
+    graph.add_edge("generate_response", END)
 
     return graph.compile()
