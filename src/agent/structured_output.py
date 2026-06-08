@@ -16,7 +16,7 @@ from src.agent.schemas import (
 )
 from src.agent.notifications import send_error_notification_sync
 from src.agent.prompts import CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT, SYSTEM_PROMPT
-from src.config import get_llm
+from src.config import get_llm, callbacks
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +128,7 @@ class StructuredOutputHandler:
         Попытки: 1 основная + max_retries повторных = 3 всего при max_retries=2
         """
         structured_llm = self._get_structured_llm(schema)
+        runnable = structured_llm.with_config(callbacks=callbacks if callbacks else None)
         last_error: Optional[Exception] = None
         
         total_attempts = self.max_retries + 1  # 1 основная + 2 retry
@@ -138,7 +139,7 @@ class StructuredOutputHandler:
                     f"[{request_id}] {operation}: попытка {attempt + 1}/{total_attempts}"
                 )
                 
-                response = structured_llm.invoke(messages)
+                response = runnable.invoke(messages)
                 
                 # Дополнительная бизнес-валидация
                 self._validate_business_rules(response, operation)
