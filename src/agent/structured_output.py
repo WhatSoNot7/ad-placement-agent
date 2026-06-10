@@ -18,8 +18,13 @@ from src.agent.notifications import send_error_notification_sync
 from src.agent.prompts import CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT, SYSTEM_PROMPT
 from src.config import get_llm, callbacks
 
+from datetime import datetime, timezone
+
 logger = logging.getLogger(__name__)
 
+now = datetime.now(timezone.utc)
+current_year = now.year
+current_month = now.month
 
 class StructuredOutputHandler:
     """Обработчик structured output с retry=2 и graceful degradation."""
@@ -65,6 +70,8 @@ class StructuredOutputHandler:
             user_branch=user_branch,
             has_attachment=has_attachment,
             user_message=user_message,
+            current_year=current_year,
+            current_month=f"{current_month:02d}",
         )
         
         messages = [
@@ -83,6 +90,7 @@ class StructuredOutputHandler:
         self,
         user_role: str,
         user_branch: str,
+        target_month: str,
         action: str,
         result: str,
         request_id: Optional[str] = None,
@@ -99,6 +107,7 @@ class StructuredOutputHandler:
         prompt = RESPONSE_PROMPT.format(
             user_role=user_role,
             user_branch=user_branch,
+            target_month=target_month,
             action=action,
             result=result,
         )

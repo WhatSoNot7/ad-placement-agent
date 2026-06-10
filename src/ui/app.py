@@ -7,7 +7,8 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.agent import create_graph, AgentState
+from src.agent.graph import create_graph
+from src.agent.state import AgentState
 from src.agent.schemas import AgentResponse, ErrorResponse
 
 
@@ -25,10 +26,10 @@ st.caption("Чат-бот для работы с планами размещен
 st.sidebar.header("Настройки")
 
 USER_OPTIONS = {
-    "editor_nsk_01": {"label": "Иванов И.И. (Editor, Новосибирск)", "role": "editor", "branch": "novosibirsk"},
-    "editor_kzn_01": {"label": "Петров П.П. (Editor, Казань)", "role": "editor", "branch": "kazan"},
-    "editor_msk_01": {"label": "Сидоров С.С. (Editor, Москва)", "role": "editor", "branch": "moscow"},
-    "approver_01": {"label": "Щербаков С.А. (Approver, HQ)", "role": "manager", "branch": "hq"},
+    "editor_nsk_01": {"label": "Иванов И.И. (Editor, Новосибирск)", "role": "editor", "branch": "Новосибирск"},
+    "editor_kzn_01": {"label": "Петров П.П. (Editor, Казань)", "role": "editor", "branch": "Казань"},
+    "editor_msk_01": {"label": "Сидоров С.С. (Editor, Москва)", "role": "editor", "branch": "Москва"},
+    "approver_01": {"label": "Щербаков С.А. (Approver, HQ)", "role": "manager", "branch": "HQ"},
 }
 
 selected_user = st.sidebar.selectbox(
@@ -47,9 +48,16 @@ st.sidebar.markdown(f"**Филиал:** `{user_info['branch']}`")
 # --- Chat history ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-
+    
 if "graph" not in st.session_state:
-    st.session_state.graph = create_graph()
+    graph_obj = create_graph()
+    try:
+        dbg = graph_obj.get_graph() if hasattr(graph_obj, "get_graph") else None
+        print("GRAPH NODES:", list(getattr(dbg, "nodes", [])))
+        print("GRAPH EDGES:", list(getattr(dbg, "edges", [])))
+    except Exception as e:
+        print("GRAPH DEBUG ERROR:", e)
+    st.session_state.graph = graph_obj
 
 # Display chat history
 for msg in st.session_state.messages:

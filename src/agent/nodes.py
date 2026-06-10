@@ -873,6 +873,7 @@ def generate_response(state: AgentState) -> dict:
     result = handler.generate_response(
         user_role=state["user_role"],
         user_branch=state["user_branch"],
+        target_month=state["target_month"],
         action=intent,
         result=tool_result,
         request_id=request_id,
