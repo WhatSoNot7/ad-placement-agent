@@ -92,7 +92,7 @@ cp .env.example .env
 docker-compose up --build
 
 # 4. Агент доступен по адресу:
-# http://localhost:8501 (UI, если есть Streamlit)
+http://localhost:8501 (UI, если есть Streamlit)
 ```
 
 

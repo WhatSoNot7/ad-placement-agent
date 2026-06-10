@@ -95,7 +95,7 @@ INSERT INTO houses (house_id, branch, address, apartments, existing_subscribers,
     ('MSK-002', 'Москва', 'ул. Арбат, 5', 180, 60, TRUE)
 ON CONFLICT DO NOTHING;
 
--- План на июль 2026
+-- План на июнь 2026
 INSERT INTO plans (branch, month, house_id, ad_type, frequency, apartments, existing_subscribers, predicted_leads, cost) VALUES
     ('Новосибирск', '2026-06', 'NSK-001', 'mailbox_flyer', 2, 120, 45, 3.2, 1500.00),
     ('Новосибирск', '2026-06', 'NSK-002', 'elevator_poster', 1, 80, 20, 1.8, 2000.00),
