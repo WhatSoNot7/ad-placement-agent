@@ -167,6 +167,7 @@ def handle_get_plan(state: AgentState) -> dict:
         return {
             "plan_exists": None,
             "plan_data": None,
+            "file_path": None,
             "tool_result": (
                 "Не удалось определить целевой месяц. "
                 "Пожалуйста, уточните, за какой конкретный месяц вы хотите получить план размещения "
@@ -194,6 +195,7 @@ def handle_get_plan(state: AgentState) -> dict:
             return {
                 "plan_exists": True,
                 "plan_data": plan_data,
+                "file_path": file_path,
                 "tool_result": (
                     f"План найден. Записей: {len(plan_data)}. "
                     f"Файл сформирован: {file_path}"
@@ -205,6 +207,7 @@ def handle_get_plan(state: AgentState) -> dict:
             return {
                 "plan_exists": False,
                 "plan_data": None,
+                "file_path": None,
                 "tool_result": (
                     f"План на {target_month} ещё не сформирован. "
                     f"Обычно планы появляются после 20-го числа предыдущего месяца. "
@@ -229,6 +232,7 @@ def handle_get_plan(state: AgentState) -> dict:
             return {
                 "plan_exists": False,
                 "plan_data": None,
+                "file_path": None,
                 "tool_result": (
                     f"План для филиала '{branch}' на {target_month} "
                     f"не найден в базе данных. "
@@ -241,6 +245,7 @@ def handle_get_plan(state: AgentState) -> dict:
         return {
             "plan_exists": None,
             "plan_data": None,
+            "file_path": None,
             "tool_result": f"Ошибка при получении плана: {str(e)}",
         }
 
@@ -864,21 +869,42 @@ def generate_response(state: AgentState) -> dict:
     if state.get("is_error"):
         return {}
 
-    handler = _get_handler()
     request_id = state["request_id"]
 
+    # Жёсткая логика поверх фактов
+    plan_exists = state.get("plan_exists")
+    file_path = state.get("file_path")
+    plan_data = state.get("plan_data") or []
     intent = state.get("intent", "unknown")
-    tool_result = state.get("tool_result", "Нет данных")
+
+    # Если это запрос плана — формируем детерминированный ответ без LLM
+    if intent in {"get_plan", "handle_get_plan"}:
+        if plan_exists is True and file_path:
+            count = len(plan_data)
+            resp = {
+                "status": "ok",
+                "message": f"План найден. Записей: {count}. Файл готов к скачиванию.",
+                "attachments": [{"type": "file", "path": file_path, "label": "План (Excel)"}],
+            }
+            return {"response": resp}
+        if plan_exists is False:
+            tool_result = state.get("tool_result") or "К сожалению, план не найден."
+            resp = {"status": "not_found", "message": tool_result, "attachments": []}
+            return {"response": resp}
+        # неизвестное состояние — дальше LLM при необходимости
+
+    # Для остальных случаев — LLM
+    handler = _get_handler()
+    tool_result = state.get("tool_result") or "Нет данных"
 
     result = handler.generate_response(
-        user_role=state["user_role"],
-        user_branch=state["user_branch"],
-        target_month=state["target_month"],
+        user_role=state.get("user_role"),
+        user_branch=state.get("user_branch"),
+        target_month=state.get("target_month"),
         action=intent,
         result=tool_result,
         request_id=request_id,
     )
-
     return {"response": result}
 
 

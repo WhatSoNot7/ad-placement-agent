@@ -159,14 +159,17 @@ if prompt := st.chat_input("Введите сообщение..."):
 
                 # Извлекаем structured response
                 response_obj = result.get("response")
+                file_path_from_state = result.get("file_path")
 
                 if isinstance(response_obj, AgentResponse):
                     response_text = response_obj.message
 
                     # Показываем next_steps если есть
                     if response_obj.next_steps:
-                        steps = "\n".join(f"  • {s}" for s in response_obj.next_steps)
-                        response_text += f"\n\n**Следующие шаги:**\n{steps}"
+                        steps = "\n".join(f"- {s}" for s in response_obj.next_steps)
+                        response_text += f"\n\nСледующие шаги:\n{steps}"
+
+                    st.markdown(response_text)
 
                 elif isinstance(response_obj, ErrorResponse):
                     response_text = f"⚠️ {response_obj.message}"
