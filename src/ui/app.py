@@ -5,12 +5,16 @@ import sys
 import os
 import uuid
 
+import openpyxl
+import io
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from src.agent.graph import create_graph
 from src.agent.state import AgentState
 from src.agent.schemas import AgentResponse, ErrorResponse
 
+from src.config import callbacks
 
 st.set_page_config(
     page_title="Ad Placement Agent",
@@ -86,24 +90,19 @@ if prompt := st.chat_input("Введите сообщение..."):
     file_path = None
 
     if uploaded_file is not None:
-        import openpyxl
-        import io
 
         has_attachment = True
         # Сохраняем файл для tool
-        file_path = f"data/uploads/{uploaded_file.name}"
+        data = uploaded_file.read()
         os.makedirs("data/uploads", exist_ok=True)
+        file_path = f"data/uploads/{uploaded_file.name}"
         with open(file_path, "wb") as f:
-            f.write(uploaded_file.read())
-        uploaded_file.seek(0)
+            f.write(data)
 
-        # Парсим для state
-        wb = openpyxl.load_workbook(io.BytesIO(uploaded_file.read()))
+        wb = openpyxl.load_workbook(io.BytesIO(data))
         ws = wb.active
         headers = [cell.value for cell in ws[1]]
-        rows = []
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            rows.append(dict(zip(headers, row)))
+        rows = [dict(zip(headers, r)) for r in ws.iter_rows(min_row=2, values_only=True)]
         corrections_file_content = rows
 
     # Prepare state
@@ -155,18 +154,22 @@ if prompt := st.chat_input("Введите сообщение..."):
     with st.chat_message("assistant"):
         with st.spinner("Думаю..."):
             try:
-                result = st.session_state.graph.invoke(initial_state)
+                print("DEBUG file_path:", file_path, "has_attachment:", has_attachment)
+                result = st.session_state.graph.invoke(initial_state, config={"callbacks": callbacks})
 
                 # Извлекаем structured response
                 response_obj = result.get("response")
+                file_path_from_state = result.get("file_path")
 
                 if isinstance(response_obj, AgentResponse):
                     response_text = response_obj.message
 
                     # Показываем next_steps если есть
                     if response_obj.next_steps:
-                        steps = "\n".join(f"  • {s}" for s in response_obj.next_steps)
-                        response_text += f"\n\n**Следующие шаги:**\n{steps}"
+                        steps = "\n".join(f"- {s}" for s in response_obj.next_steps)
+                        response_text += f"\n\nСледующие шаги:\n{steps}"
+
+                    st.markdown(response_text)
 
                 elif isinstance(response_obj, ErrorResponse):
                     response_text = f"⚠️ {response_obj.message}"

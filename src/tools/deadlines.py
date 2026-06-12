@@ -40,7 +40,7 @@ def get_deadline_info(month: str, branch: str) -> dict:
         else:
             deadline = datetime(year, mon - 1, 25)
     
-    now = datetime.now()
+    now = datetime.now().date()
     
     if isinstance(deadline, str):
         deadline = datetime.strptime(deadline, "%Y-%m-%d")

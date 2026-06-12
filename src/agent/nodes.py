@@ -51,8 +51,8 @@ def identify_user(state: AgentState) -> dict:
     )
     return {
         "request_id": request_id,
-        "is_error": False,
-        "iteration": state.get("iteration", 0),
+        #"is_error": False,
+        #"iteration": state.get("iteration", 0),
     }
 
 
@@ -167,6 +167,7 @@ def handle_get_plan(state: AgentState) -> dict:
         return {
             "plan_exists": None,
             "plan_data": None,
+            "file_path": None,
             "tool_result": (
                 "Не удалось определить целевой месяц. "
                 "Пожалуйста, уточните, за какой конкретный месяц вы хотите получить план размещения "
@@ -194,6 +195,7 @@ def handle_get_plan(state: AgentState) -> dict:
             return {
                 "plan_exists": True,
                 "plan_data": plan_data,
+                "file_path": file_path,
                 "tool_result": (
                     f"План найден. Записей: {len(plan_data)}. "
                     f"Файл сформирован: {file_path}"
@@ -205,6 +207,7 @@ def handle_get_plan(state: AgentState) -> dict:
             return {
                 "plan_exists": False,
                 "plan_data": None,
+                "file_path": None,
                 "tool_result": (
                     f"План на {target_month} ещё не сформирован. "
                     f"Обычно планы появляются после 20-го числа предыдущего месяца. "
@@ -229,6 +232,7 @@ def handle_get_plan(state: AgentState) -> dict:
             return {
                 "plan_exists": False,
                 "plan_data": None,
+                "file_path": None,
                 "tool_result": (
                     f"План для филиала '{branch}' на {target_month} "
                     f"не найден в базе данных. "
@@ -241,6 +245,7 @@ def handle_get_plan(state: AgentState) -> dict:
         return {
             "plan_exists": None,
             "plan_data": None,
+            "file_path": None,
             "tool_result": f"Ошибка при получении плана: {str(e)}",
         }
 
@@ -262,14 +267,32 @@ def handle_submit_corrections(state: AgentState) -> dict:
     4. При valid: Run forecast -> Generate Comparison -> Save -> Notify Approver
     """
     request_id = state["request_id"]
-    file_path = state.get("file_path")
     branch = state["user_branch"]
     target_month = state.get("target_month") or _default_month()
 
-    # --- Нет файла ---
-    if not file_path:
+    has_attachment=state.get("has_attachment", False)
+    file_path = state.get("file_path")
+    file_content = state.get("corrections_file_content")
+    
+    # --- Проблемы с файлом ---
+    if not has_attachment:
         response = AgentResponse(
             message="Файл корректировок не приложен. Пожалуйста, прикрепите файл Excel.",
+            status=ActionStatus.NEEDS_CLARIFICATION,
+            action_performed="submit_corrections",
+            data_summary=None,
+            next_steps=["Прикрепите файл Excel с корректировками и отправьте повторно"],
+            requires_user_action=True,
+        )        
+        return {
+            "deadline_ok": None,
+            "validation_result": None,
+            "corrections_file_content": None,
+            "response": response,
+        }        
+    elif not file_content:
+        response = AgentResponse(
+            message="Файл не удалось прочитать. Проверьте формат (xlsx, первая строка — заголовки).",
             status=ActionStatus.NEEDS_CLARIFICATION,
             action_performed="submit_corrections",
             data_summary=None,
@@ -320,11 +343,12 @@ def handle_submit_corrections(state: AgentState) -> dict:
 
     # --- Дедлайн ok -> Validate Excel ---
     try:
-        file_content = _read_file(file_path)
-        validation = validate_corrections_file.invoke({
-            "file_content": file_content,
-            "branch": branch,
-            "month": target_month,
+        if not isinstance(file_content, list):
+            raise ValueError("Ожидался распарсенный Excel в виде list[dict] в state['corrections_file_content'].")
+        validation = validate_corrections_file.with_config(run_name="validate_corrections").invoke({
+        "file_content": file_content,
+        "branch": branch,
+        "month": target_month,
         })
     except Exception as e:
         logger.error(f"[{request_id}] Error validating file: {e}")
@@ -376,7 +400,7 @@ def handle_submit_corrections(state: AgentState) -> dict:
         }
 
     # --- Valid: Run forecast -> Save -> Notify Approver ---
-    corrections_data = validation.get("data", [])
+    corrections_data = validation.get("corrections_parsed", [])
 
     try:
         forecast_result = recalculate_with_corrections.invoke({
@@ -864,21 +888,42 @@ def generate_response(state: AgentState) -> dict:
     if state.get("is_error"):
         return {}
 
-    handler = _get_handler()
     request_id = state["request_id"]
 
+    # Жёсткая логика поверх фактов
+    plan_exists = state.get("plan_exists")
+    file_path = state.get("file_path")
+    plan_data = state.get("plan_data") or []
     intent = state.get("intent", "unknown")
-    tool_result = state.get("tool_result", "Нет данных")
+
+    # Если это запрос плана — формируем детерминированный ответ без LLM
+    if intent in {"get_plan", "handle_get_plan"}:
+        if plan_exists is True and file_path:
+            count = len(plan_data)
+            resp = {
+                "status": "ok",
+                "message": f"План найден. Записей: {count}. Файл готов к скачиванию.",
+                "attachments": [{"type": "file", "path": file_path, "label": "План (Excel)"}],
+            }
+            return {"response": resp}
+        if plan_exists is False:
+            tool_result = state.get("tool_result") or "К сожалению, план не найден."
+            resp = {"status": "not_found", "message": tool_result, "attachments": []}
+            return {"response": resp}
+        # неизвестное состояние — дальше LLM при необходимости
+
+    # Для остальных случаев — LLM
+    handler = _get_handler()
+    tool_result = state.get("tool_result") or "Нет данных"
 
     result = handler.generate_response(
-        user_role=state["user_role"],
-        user_branch=state["user_branch"],
-        target_month=state["target_month"],
+        user_role=state.get("user_role"),
+        user_branch=state.get("user_branch"),
+        target_month=state.get("target_month"),
         action=intent,
         result=tool_result,
         request_id=request_id,
     )
-
     return {"response": result}
 
 

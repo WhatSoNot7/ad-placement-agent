@@ -46,6 +46,9 @@ def validate_corrections_file(file_content: list[dict], branch: str, month: str)
     Returns:
         Результат валидации с ошибками и предупреждениями
     """
+    if not isinstance(file_content, list):
+        raise ValueError("file_content должен быть list[dict], а не bytes. Проверьте парсинг Excel.")
+        
     errors = []
     warnings = []
     valid_corrections = []

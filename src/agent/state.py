@@ -40,6 +40,7 @@ class AgentState(TypedDict):
     validation_passed: bool | None
     validation_errors: list[str] | None
     corrections_data: list[dict] | None  # распарсенные данные из файла
+    corrections_file_content: list[dict] | None # распарсенные строки Excel
 
     # === Approve flow ===
     all_corrections_received: bool | None  # все ли филиалы прислали корректировки

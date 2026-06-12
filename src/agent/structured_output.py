@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-now = datetime.now(timezone.utc)
+now = datetime.now(timezone.utc).date()
 current_year = now.year
 current_month = now.month
 
