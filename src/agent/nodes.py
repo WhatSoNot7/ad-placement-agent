@@ -191,28 +191,51 @@ def handle_get_plan(state: AgentState) -> dict:
                 "plan_data": plan_data,
                 "branch": branch,
                 "month": target_month,
-            })
+            })           
+            
+            status_text = (
+                f"План для филиала {branch} за {target_month} найден. Записей: {len(plan_data)}. Файл готов к скачиванию."
+            )
+            
+            response = AgentResponse(
+                message=status_text,
+                status=ActionStatus.SUCCESS,
+                action_performed="get_plan",
+                data_summary=f"Месяц: {target_month}, филиал: {branch}, план: {status}",
+                next_steps=[],
+                requires_user_action=False,
+                )
+                
             return {
                 "plan_exists": True,
                 "plan_data": plan_data,
                 "file_path": file_path,
-                "tool_result": (
-                    f"План найден. Записей: {len(plan_data)}. "
-                    f"Файл сформирован: {file_path}"
-                ),
+                "tool_result": status_text,
+                "response": response,
             }
 
         elif status == "not_ready":
             # План ещё не сформирован (слишком рано)
+            status_text = (
+                    f"План на {target_month} ещё не сформирован. "
+                    f"Обычно планы появляются после 20-го числа предыдущего месяца. "
+                    f"Ожидайте."
+            )
+            
+            response = AgentResponse(
+                message=status_text,
+                status=ActionStatus.SUCCESS,
+                action_performed="get_plan",
+                data_summary=f"Месяц: {target_month}, филиал: {branch}, план: {status}",
+                next_steps=[],
+                requires_user_action=False,
+                )            
             return {
                 "plan_exists": False,
                 "plan_data": None,
                 "file_path": None,
-                "tool_result": (
-                    f"План на {target_month} ещё не сформирован. "
-                    f"Обычно планы появляются после 20-го числа предыдущего месяца. "
-                    f"Ожидайте."
-                ),
+                "tool_result": status_text,
+                "response": response,
             }
 
         else:
@@ -229,15 +252,26 @@ def handle_get_plan(state: AgentState) -> dict:
                 ),
                 "notification_type": "info",
             })
+            status_text = (
+                    f"План для филиала '{branch}' на {target_month} "
+                    f"не найден в базе данных. "
+                    f"Автор модели уведомлён о проблеме."
+            )
+            
+            response = AgentResponse(
+                message=status_text,
+                status=ActionStatus.SUCCESS,
+                action_performed="get_plan",
+                data_summary=f"Месяц: {target_month}, филиал: {branch}, план: {status}",
+                next_steps=[],
+                requires_user_action=False,
+                )                 
             return {
                 "plan_exists": False,
                 "plan_data": None,
                 "file_path": None,
-                "tool_result": (
-                    f"План для филиала '{branch}' на {target_month} "
-                    f"не найден в базе данных. "
-                    f"Автор модели уведомлён о проблеме."
-                ),
+                "tool_result": status_text,
+                "response": response,
             }
 
     except Exception as e:
@@ -247,6 +281,7 @@ def handle_get_plan(state: AgentState) -> dict:
             "plan_data": None,
             "file_path": None,
             "tool_result": f"Ошибка при получении плана: {str(e)}",
+            "response": f"Ошибка при получении плана: {str(e)}"
         }
 
 
@@ -890,27 +925,27 @@ def generate_response(state: AgentState) -> dict:
 
     request_id = state["request_id"]
 
-    # Жёсткая логика поверх фактов
-    plan_exists = state.get("plan_exists")
-    file_path = state.get("file_path")
-    plan_data = state.get("plan_data") or []
-    intent = state.get("intent", "unknown")
+    # # Жёсткая логика поверх фактов
+    # plan_exists = state.get("plan_exists")
+    # file_path = state.get("file_path")
+    # plan_data = state.get("plan_data") or []
+    # intent = state.get("intent", "unknown")
 
-    # Если это запрос плана — формируем детерминированный ответ без LLM
-    if intent in {"get_plan", "handle_get_plan"}:
-        if plan_exists is True and file_path:
-            count = len(plan_data)
-            resp = {
-                "status": "ok",
-                "message": f"План найден. Записей: {count}. Файл готов к скачиванию.",
-                "attachments": [{"type": "file", "path": file_path, "label": "План (Excel)"}],
-            }
-            return {"response": resp}
-        if plan_exists is False:
-            tool_result = state.get("tool_result") or "К сожалению, план не найден."
-            resp = {"status": "not_found", "message": tool_result, "attachments": []}
-            return {"response": resp}
-        # неизвестное состояние — дальше LLM при необходимости
+    # # Если это запрос плана — формируем детерминированный ответ без LLM
+    # if intent in {"get_plan", "handle_get_plan"}:
+        # if plan_exists is True and file_path:
+            # count = len(plan_data)
+            # resp = {
+                # "status": "ok",
+                # "message": f"План найден. Записей: {count}. Файл готов к скачиванию.",
+                # "attachments": [{"type": "file", "path": file_path, "label": "План (Excel)"}],
+            # }
+            # return {"response": resp}
+        # if plan_exists is False:
+            # tool_result = state.get("tool_result") or "К сожалению, план не найден."
+            # resp = {"status": "not_found", "message": tool_result, "attachments": []}
+            # return {"response": resp}
+        # # неизвестное состояние — дальше LLM при необходимости
 
     # Для остальных случаев — LLM
     handler = _get_handler()
