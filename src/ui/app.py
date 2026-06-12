@@ -33,7 +33,7 @@ USER_OPTIONS = {
     "editor_nsk_01": {"label": "Иванов И.И. (Editor, Новосибирск)", "role": "editor", "branch": "Новосибирск"},
     "editor_kzn_01": {"label": "Петров П.П. (Editor, Казань)", "role": "editor", "branch": "Казань"},
     "editor_msk_01": {"label": "Сидоров С.С. (Editor, Москва)", "role": "editor", "branch": "Москва"},
-    "approver_01": {"label": "Щербаков С.А. (Approver, HQ)", "role": "manager", "branch": "HQ"},
+    "approver_01": {"label": "Щербаков С.А. (Approver, HQ)", "role": "approver", "branch": "HQ"},
 }
 
 selected_user = st.sidebar.selectbox(
@@ -168,8 +168,6 @@ if prompt := st.chat_input("Введите сообщение..."):
                     if response_obj.next_steps:
                         steps = "\n".join(f"- {s}" for s in response_obj.next_steps)
                         response_text += f"\n\nСледующие шаги:\n{steps}"
-
-                    st.markdown(response_text)
 
                 elif isinstance(response_obj, ErrorResponse):
                     response_text = f"⚠️ {response_obj.message}"

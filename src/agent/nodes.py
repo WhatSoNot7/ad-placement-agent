@@ -488,7 +488,7 @@ def handle_ask_status(state: AgentState) -> dict:
         approval_status = state.get("approval_status", "pending")
 
         status_text = (
-            f"Статус на {target_month}:\n"
+            f"Статус для {target_month}:\n"
             f"  - План: {plan_status}\n"
             f"  - Дедлайн корректировок: {deadline_display}\n"
             f"  - {'⚠️ Дедлайн прошёл' if is_passed else f'Осталось дней: {days_left}'}\n"

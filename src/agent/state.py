@@ -8,7 +8,7 @@ from src.agent.schemas import IntentClassification, AgentResponse, ErrorResponse
 class AgentState(TypedDict):
     # === Пользователь ===
     user_id: str
-    user_role: str  # "editor", "manager", "director"
+    user_role: str  # "editor", "approver"
     user_branch: str
     has_attachment: bool
     file_path: str | None

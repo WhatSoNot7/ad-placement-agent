@@ -36,9 +36,9 @@ def get_deadline_info(month: str, branch: str) -> dict:
         # Дефолтный дедлайн: 25 число предыдущего месяца
         year, mon = map(int, month.split("-"))
         if mon == 1:
-            deadline = datetime(year - 1, 12, 25)
+            deadline = datetime(year - 1, 12, 25).date()
         else:
-            deadline = datetime(year, mon - 1, 25)
+            deadline = datetime(year, mon - 1, 25).date()
     
     now = datetime.now().date()
     
