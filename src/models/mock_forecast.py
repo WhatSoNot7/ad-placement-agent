@@ -1,4 +1,4 @@
-"""
+"""*
 Mock модель прогнозирования заявок.
 В production здесь вызов реальной модели градиентного бустинга.
 """
@@ -6,13 +6,14 @@ Mock модель прогнозирования заявок.
 import random
 from typing import Any
 
+from src.db.connection import get_db_connection
 
 def predict_leads(plan_rows: list[dict]) -> list[dict]:
     """
     Принимает строки плана, возвращает их же с обновлённым прогнозом заявок.
     
     Mock-логика: predicted_leads = apartments * coefficient * random_factor
-    В production: вызов pickle-модели или API endpoint.
+    В production: вызов pickle-модели
     """
     coefficients = {
         "mailbox_flyer": 0.02,
@@ -46,7 +47,8 @@ def predict_leads(plan_rows: list[dict]) -> list[dict]:
 
 
 def recalculate_with_corrections(
-    original_plan: list[dict],
+    branch: str,
+    month: str,
     corrections: list[dict],
 ) -> tuple[list[dict], dict[str, Any]]:
     """
@@ -55,26 +57,51 @@ def recalculate_with_corrections(
     Returns:
         (adjusted_plan, summary) — новый план и сводка изменений
     """
-    # Индексируем корректировки по house_id
-    corrections_map = {c["house_id"]: c for c in corrections}
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
+    # Текущий план
+    cursor.execute(
+        """
+        SELECT house_id, ad_type, frequency, apartments, 
+               existing_subscribers, predicted_leads, cost
+        FROM plans 
+        WHERE branch = %s AND month = %s
+        ORDER BY house_id
+        """,
+        (branch, month),
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        cursor.close()
+        conn.close()
+        raise ValueError(f"Не найден исходный план для {branch} за период {month}.")
+
+    columns = [desc[0] for desc in cursor.description]
+    original_plan = [dict(zip(columns, row)) for row in rows]
+
+    cursor.close()
+    conn.close()
+
+    corrections_map = {c["house_id"]: c for c in corrections}
+
     adjusted_plan = []
     removed_houses = []
     added_houses = []
     modified_houses = []
-    
+
     for row in original_plan:
         house_id = row["house_id"]
-        
+
         if house_id in corrections_map:
             correction = corrections_map[house_id]
             action = correction.get("action", "modify")
-            
+
             if action == "remove":
                 removed_houses.append(house_id)
-                continue  # Исключаем из плана
+                continue
             elif action == "modify":
-                # Применяем изменения
                 modified_row = {**row}
                 if "ad_type" in correction:
                     modified_row["ad_type"] = correction["ad_type"]
@@ -86,8 +113,7 @@ def recalculate_with_corrections(
                 adjusted_plan.append(row)
         else:
             adjusted_plan.append(row)
-    
-    # Добавляем новые дома из корректировок
+
     for correction in corrections:
         if correction.get("action") == "add":
             added_houses.append(correction["house_id"])
@@ -98,16 +124,18 @@ def recalculate_with_corrections(
                 "apartments": correction.get("apartments", 100),
                 "existing_subscribers": correction.get("existing_subscribers", 0),
             })
-    
-    # Пересчитываем прогноз
+
+    # Пересчёт прогнозов/стоимости
     adjusted_plan = predict_leads(adjusted_plan)
-    
-    # Формируем сводку
-    original_leads = sum(r.get("predicted_leads", 0) for r in original_plan)
-    adjusted_leads = sum(r.get("predicted_leads", 0) for r in adjusted_plan)
-    original_cost = sum(r.get("cost", 0) for r in original_plan)
-    adjusted_cost = sum(r.get("cost", 0) for r in adjusted_plan)
-    
+
+    def totals(plan: list[dict]) -> tuple[float, float]:
+        leads = sum(float(r.get("predicted_leads", 0) or 0) for r in plan)
+        cost = sum(float(r.get("cost", 0) or 0) for r in plan)
+        return leads, cost
+
+    original_leads, original_cost = totals(original_plan)
+    adjusted_leads, adjusted_cost = totals(adjusted_plan)
+
     summary = {
         "removed_count": len(removed_houses),
         "added_count": len(added_houses),
@@ -119,5 +147,33 @@ def recalculate_with_corrections(
         "adjusted_cost_total": round(adjusted_cost, 2),
         "cost_delta": round(adjusted_cost - original_cost, 2),
     }
-    
+
+    # Формируем comparison_report (короткий человекочитаемый отчёт)
+    lines = []
+    lines.append(f"Сравнение плана для '{branch}' на {month}:")
+    lines.append(
+        f"- Лиды: было {summary['original_leads_total']}, стало {summary['adjusted_leads_total']} "
+        f"(дельта {summary['leads_delta']:+})"
+    )
+    lines.append(
+        f"- Бюджет: было {summary['original_cost_total']}, стало {summary['adjusted_cost_total']} "
+        f"(дельта {summary['cost_delta']:+})"
+    )
+    lines.append(
+        f"- Изменения: добавлено {summary['added_count']}, удалено {summary['removed_count']}, изменено {summary['modified_count']}"
+    )
+
+    # Примеры изменений (первые 5 на категорию)
+    def sample(lst: list[str], title: str) -> None:
+        if lst:
+            preview = ", ".join(map(str, lst[:5]))
+            more = f" … и ещё {len(lst) - 5}" if len(lst) > 5 else ""
+            lines.append(f"- {title}: {preview}{more}")
+
+    sample(added_houses, "Добавлены дома")
+    sample(removed_houses, "Удалены дома")
+    sample(modified_houses, "Изменены дома")
+
+    summary["comparison_report"] = "\n".join(lines)
+
     return adjusted_plan, summary

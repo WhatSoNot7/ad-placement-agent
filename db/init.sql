@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS corrections_log (
     editor_id VARCHAR(50) NOT NULL REFERENCES users(user_id),
     corrections_json JSONB NOT NULL,
     submitted_at TIMESTAMP DEFAULT NOW(),
-    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'modify')),
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
     reviewed_by VARCHAR(50),
     reviewed_at TIMESTAMP,
     UNIQUE(branch, month, editor_id)

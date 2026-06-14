@@ -5,6 +5,7 @@ import uuid
 import logging
 import os
 from datetime import datetime
+from datetime import date
 
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -17,8 +18,8 @@ from src.agent.schemas import (
     UserIntent,
 )
 from src.agent.structured_output import StructuredOutputHandler
-from src.agent.prompts import SYSTEM_PROMPT, CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT
-from src.tools.plan_db import query_plan_db
+#from src.agent.prompts import SYSTEM_PROMPT, CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT
+from src.tools.plan_db import query_plan_db, save_corrections_to_db
 from src.tools.excel_export import export_plan_to_excel
 from src.tools.validate_corrections import validate_corrections_file
 from src.tools.deadlines import get_deadline_info
@@ -123,7 +124,7 @@ def check_permissions(state: AgentState) -> dict:
     user_role = state["user_role"]
 
     # Только manager/director могут утверждать планы
-    if intent == "approve_plan" and user_role not in ("manager", "director"):
+    if intent == "approve_plan" and user_role not in ("approver"):
         logger.warning(
             f"[{state['request_id']}] Permission denied: "
             f"{user_role} cannot approve"
@@ -302,8 +303,9 @@ def handle_submit_corrections(state: AgentState) -> dict:
     4. При valid: Run forecast -> Generate Comparison -> Save -> Notify Approver
     """
     request_id = state["request_id"]
+    editor_id = state["user_id"]
     branch = state["user_branch"]
-    target_month = state.get("target_month") or _default_month()
+    target_month = state.get("target_month")
 
     has_attachment=state.get("has_attachment", False)
     file_path = state.get("file_path")
@@ -435,22 +437,35 @@ def handle_submit_corrections(state: AgentState) -> dict:
         }
 
     # --- Valid: Run forecast -> Save -> Notify Approver ---
-    corrections_data = validation.get("corrections_parsed", [])
+    corrections_parsed = validation.get("corrections_parsed", [])
 
     try:
-        forecast_result = recalculate_with_corrections.invoke({
-            "branch": branch,
-            "corrections": corrections_data,
-        })
-        comparison = forecast_result.get("comparison_report", "")
-        budget_delta = forecast_result.get("budget_delta", 0.0)
-        leads_delta = forecast_result.get("leads_delta", 0.0)
+        adjusted_plan, forecast_summary = recalculate_with_corrections(
+        branch=branch,
+        month=target_month,
+        corrections=corrections_parsed,
+        )
+        comparison = forecast_summary.get("comparison_report", "")
+        budget_delta = forecast_summary.get("cost_delta")
+        leads_delta = forecast_summary.get("leads_delta")
     except Exception as e:
         logger.error(f"[{request_id}] Error recalculating forecast: {e}")
         comparison = f"Ошибка пересчёта: {str(e)}"
         budget_delta = None
         leads_delta = None
-
+        
+    # Сохраняем корректировки в БД: corrections_log
+    try:
+        save_corrections_to_db_result = save_corrections_to_db.invoke({
+            "branch": branch,
+            "month": target_month,
+            "editor_id": editor_id,
+            "corrections": corrections_parsed, # или adjusted_plan, если нужно сохранять итоговый план
+        })
+        saved_to_db = save_corrections_to_db_result["success"]
+    except Exception as e:
+        logger.error(f"[{request_id}] Failed to save corrections: {e}")
+    
     # Notify Approver
     try:
         send_notification.invoke({
@@ -465,17 +480,20 @@ def handle_submit_corrections(state: AgentState) -> dict:
     except Exception as e:
         logger.warning(f"[{request_id}] Failed to notify approver: {e}")
 
+
     response = AgentResponse(
         message=(
-            f"Корректировки приняты и прошли валидацию.\n"
-            f"Строк: {len(corrections_data)}.\n"
-            f"Прогноз пересчитан. {comparison}\n"
-            f"Руководитель уведомлён и рассмотрит корректировки."
-        ),
+            "Корректировки приняты и прошли валидацию.\n"
+            f"Строк: {len(corrections_parsed)}.\n"
+            "Прогноз пересчитан.\n\n"
+            f"{comparison}\n\n"
+            f"Прогноз сохранен в БД: {saved_to_db}\n\n"
+            "Руководитель уведомлён и рассмотрит корректировки."
+        ),        
         status=ActionStatus.SUCCESS,
         action_performed="submit_corrections",
         data_summary=(
-            f"Строк: {len(corrections_data)}, "
+            f"Строк: {len(corrections_parsed)}, "
             f"дельта бюджета: {budget_delta}, дельта лидов: {leads_delta}"
         ),
         next_steps=["Ожидайте решения руководителя"],
@@ -484,7 +502,7 @@ def handle_submit_corrections(state: AgentState) -> dict:
     return {
         "deadline_ok": True,
         "validation_result": validation,
-        "corrections_file_content": corrections_data,
+        "corrections_file_content": corrections_parsed,
         "response": response,
     }
 
@@ -499,7 +517,7 @@ def handle_ask_status(state: AgentState) -> dict:
     """
     request_id = state["request_id"]
     branch = state["user_branch"]
-    target_month = state.get("target_month") or _default_month()
+    target_month = state.get("target_month")
 
     logger.info(f"[{request_id}] Getting status: branch={branch}, month={target_month}")
 
@@ -561,13 +579,13 @@ def handle_ask_status(state: AgentState) -> dict:
 
 def handle_approve_plan(state: AgentState) -> dict:
     """
-    Утверждение/отклонение корректировок руководителем.
+    Утверждение/отклонение корректировок согласующим сотрудником.
 
     ВЕТВЛЕНИЕ 3: Проверяем, все ли филиалы прислали корректировки / дедлайн вышел
       - Не все ответили -> Показать статус, предложить подождать/напомнить
       - Все получены / дедлайн вышел -> Перейти к решению
 
-    ВЕТВЛЕНИЕ 4: Решение руководителя
+    ВЕТВЛЕНИЕ 4: Решение согласующего сотрудника
       - approve_branch -> Утвердить филиал + Notify Editor: Принято
       - reject_branch -> Отклонить филиал + Notify Editor: Отклонено + причина
       - request_modify -> Запросить доработку + Notify Editor: Доработать
@@ -577,7 +595,7 @@ def handle_approve_plan(state: AgentState) -> dict:
     request_id = state["request_id"]
     branch = state["user_branch"]
     user_role = state["user_role"]
-    target_month = state.get("target_month") or _default_month()
+    target_month = state.get("target_month")
     last_message = state["messages"][-1]["content"].lower()
 
     logger.info(f"[{request_id}] Approve flow: role={user_role}, branch={branch}")
@@ -643,7 +661,7 @@ def handle_approve_plan(state: AgentState) -> dict:
             "response": response,
         }
 
-    # === ВЕТВЛЕНИЕ 4: Определение решения руководителя ===
+    # === ВЕТВЛЕНИЕ 4: Определение решения согласующего ===
     decision = _parse_approval_decision(last_message, state)
 
     if decision is None:
@@ -925,28 +943,6 @@ def generate_response(state: AgentState) -> dict:
 
     request_id = state["request_id"]
 
-    # # Жёсткая логика поверх фактов
-    # plan_exists = state.get("plan_exists")
-    # file_path = state.get("file_path")
-    # plan_data = state.get("plan_data") or []
-    # intent = state.get("intent", "unknown")
-
-    # # Если это запрос плана — формируем детерминированный ответ без LLM
-    # if intent in {"get_plan", "handle_get_plan"}:
-        # if plan_exists is True and file_path:
-            # count = len(plan_data)
-            # resp = {
-                # "status": "ok",
-                # "message": f"План найден. Записей: {count}. Файл готов к скачиванию.",
-                # "attachments": [{"type": "file", "path": file_path, "label": "План (Excel)"}],
-            # }
-            # return {"response": resp}
-        # if plan_exists is False:
-            # tool_result = state.get("tool_result") or "К сожалению, план не найден."
-            # resp = {"status": "not_found", "message": tool_result, "attachments": []}
-            # return {"response": resp}
-        # # неизвестное состояние — дальше LLM при необходимости
-
     # Для остальных случаев — LLM
     handler = _get_handler()
     tool_result = state.get("tool_result") or "Нет данных"
@@ -995,30 +991,3 @@ def _parse_approval_decision(last_message: str, state: AgentState) -> str | None
         return "approve_branch"
 
     return None
-
-
-# ============================================================
-# HELPER: _default_month
-# ============================================================
-
-def _default_month() -> str:
-    """Вернуть текущий месяц в формате YYYY-MM."""
-    now = datetime.now()
-    return now.strftime("%Y-%m")
-
-
-# ============================================================
-# HELPER: _read_file
-# ============================================================
-
-def _read_file(file_path: str) -> bytes | None:
-    """Прочитать файл и вернуть содержимое."""
-    try:
-        with open(file_path, "rb") as f:
-            return f.read()
-    except FileNotFoundError:
-        logger.error(f"File not found: {file_path}")
-        return None
-    except IOError as e:
-        logger.error(f"Error reading file {file_path}: {e}")
-        return None

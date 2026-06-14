@@ -18,13 +18,25 @@ from src.agent.notifications import send_error_notification_sync
 from src.agent.prompts import CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT, SYSTEM_PROMPT
 from src.config import get_llm, callbacks
 
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 
 logger = logging.getLogger(__name__)
 
-now = datetime.now(timezone.utc).date()
-current_year = now.year
-current_month = now.month
+# ============================================================
+# HELPER: _default_month
+# ============================================================
+def _default_month() -> str:
+    """Вернуть следующий месяц в формате YYYY-MM."""
+    now = datetime.now()
+    # Если текущий месяц декабрь (12), то следующий — январь (1) следующего года
+    if now.month == 12:
+        next_month_first_day = date(now.year + 1, 1, 1)
+    else:
+        next_month_first_day = date(now.year, now.month + 1, 1)
+    
+    return next_month_first_day.strftime("%Y-%m")
+    
+current_year = datetime.now().year
 
 class StructuredOutputHandler:
     """Обработчик structured output с retry=2 и graceful degradation."""
@@ -71,7 +83,7 @@ class StructuredOutputHandler:
             has_attachment=has_attachment,
             user_message=user_message,
             current_year=current_year,
-            current_month=f"{current_month:02d}",
+            default_month=_default_month(),
         )
         
         messages = [
