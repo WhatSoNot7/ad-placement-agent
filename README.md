@@ -58,12 +58,13 @@ graph TD
     validate_excel -->|errors| respond_errors([Список ошибок])
     validate_excel -->|valid| recalculate --> comparison([Сравнение + notify approver])
 
-    route_intent -->|approve_plan| check_all{Все корректировки?}
-    check_all -->|не все| partial_decision{Решение по филиалу}
+    route_intent -->|approve_plan| partial_decision{Решение по филиалу}
     partial_decision -->|approve| approve_branch([Принять])
     partial_decision -->|reject| reject_branch([Отклонить])
-    deadline_is_passed -->|дедлайн прошел| finalize_decision{Финализация}
-    finalize_decision -->|approve| finalize([Утвердить план])
+	
+	route_intent -->|finalize_plan| deadline_is_passed{Дедлайн?}
+    deadline_is_passed -->|дедлайн прошел| finalize_plan{Финализация}
+    deadline_is_passed -->|время еще есть| wait([Утвердить план])
 
     route_intent -->|ask_status| respond_status([Статус])
     route_intent -->|unclear| respond_clarify([Уточните])
