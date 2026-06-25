@@ -63,8 +63,8 @@ graph TD
     partial_decision -->|reject| reject_branch([Отклонить])
 	
 	route_intent -->|finalize_plan| deadline_is_passed{Дедлайн?}
-    deadline_is_passed -->|дедлайн прошел| finalize_plan{Финализация}
-    deadline_is_passed -->|время еще есть| wait([Утвердить план])
+    deadline_is_passed -->|дедлайн прошел| finalize_plan([Утвердить план])
+    deadline_is_passed -->|время еще есть| wait([Ждем корректировок])
 
     route_intent -->|ask_status| respond_status([Статус])
     route_intent -->|unclear| respond_clarify([Уточните])
