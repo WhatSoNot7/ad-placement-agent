@@ -62,10 +62,8 @@ graph TD
     check_all -->|не все| partial_decision{Решение по филиалу}
     partial_decision -->|approve| approve_branch([Принять])
     partial_decision -->|reject| reject_branch([Отклонить])
-    partial_decision -->|modify| request_modify([Доработать])
-    check_all -->|все получены| finalize_decision{Финализация}
-    finalize_decision -->|approve| finalize([Сохранить план])
-    finalize_decision -->|reject| reject_all([Откат])
+    deadline_is_passed -->|дедлайн прошел| finalize_decision{Финализация}
+    finalize_decision -->|approve| finalize([Утвердить план])
 
     route_intent -->|ask_status| respond_status([Статус])
     route_intent -->|unclear| respond_clarify([Уточните])
@@ -105,7 +103,7 @@ http://localhost:8501 (UI, если есть Streamlit)
 | RAG | ⬜ Реализовано / ✅ Не применимо |
 | Минимум 3 tool | ✅ Реализовано |
 | Взаимодействие с внешней системой | ✅ Реализовано |
-| Benchmark (20 запросов) | ⬜ Планируется |
+| Benchmark (10 запросов) | ✅ Реализовано |
 | LangFuse трейсы | ✅ Реализовано (cloud) |
 | Eval-кейсы (3 типа) | ⬜ Планируется |
 | Security checklist | ⬜ Планируется |

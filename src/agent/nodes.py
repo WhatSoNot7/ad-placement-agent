@@ -18,8 +18,15 @@ from src.agent.schemas import (
     UserIntent,
 )
 from src.agent.structured_output import StructuredOutputHandler
-#from src.agent.prompts import SYSTEM_PROMPT, CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT
-from src.tools.plan_db import query_plan_db, save_corrections_to_db
+from src.tools.plan_db import (
+    get_finalize_status,
+    query_plan_db, 
+    save_corrections_to_db, 
+    get_corrections_status_from_log, 
+    approve_corrections_for_branch, 
+    reject_corrections_for_branch, 
+    finalize_month_plan,
+)
 from src.tools.excel_export import export_plan_to_excel
 from src.tools.validate_corrections import validate_corrections_file
 from src.tools.deadlines import get_deadline_info
@@ -151,11 +158,11 @@ def check_permissions(state: AgentState) -> dict:
 def handle_get_plan(state: AgentState) -> dict:
     """
     Получение плана размещения.
-
-    Ветвление по результату:
-    - exists -> Export Excel + Send
-    - not_ready (слишком рано) -> Respond: План ещё не сформирован
-    - not_found (должен быть) -> Предложить уведомить автора модели
+    Возвращает в state:
+    - plan_exists: bool | None
+    - plan_data: list | None
+    - file_path: str | None
+    - response: AgentResponse
     """
     request_id = state["request_id"]
     branch = state["user_branch"]
@@ -163,127 +170,101 @@ def handle_get_plan(state: AgentState) -> dict:
 
     logger.info(f"[{request_id}] Getting plan: branch={branch}, month={target_month}")
 
-    # Если target_month не определён — запрашиваем уточнение
-    if target_month is None:
-        return {
-            "plan_exists": None,
-            "plan_data": None,
-            "file_path": None,
-            "tool_result": (
+    # 1) Нет месяца — просим уточнить
+    if not target_month:
+        response = AgentResponse(
+            message=(
                 "Не удалось определить целевой месяц. "
-                "Пожалуйста, уточните, за какой конкретный месяц вы хотите получить план размещения "
-                "(например, «план на июнь 2025» или «план на 2025-06»)."
+                "Уточните, за какой месяц нужен план (например: 'план на 2026‑07')."
             ),
-        }
+            status=ActionStatus.NEEDS_CLARIFICATION,
+            action_performed="clarify_month_for_plan",
+            data_summary=None,
+            next_steps=["Уточните месяц в формате ГГГГ‑ММ"],
+            requires_user_action=True,
+        )
+        return {"plan_exists": None, "plan_data": None, "file_path": None, "response": response}
 
     try:
-        plan_result = query_plan_db.invoke({
-            "branch": branch,
-            "month": target_month,
-        })
+        # 2) Получаем план из БД
+        raw = query_plan_db.invoke({"branch": branch, "month": target_month})
+        plan_result = raw if isinstance(raw, dict) else {}
+        status = plan_result.get("status", "not_found")
+        plan_data = plan_result.get("data") if isinstance(plan_result.get("data"), list) else []
 
-        # plan_result может вернуть: {"status": "exists"/"not_ready"/"not_found", "data": [...]}
-        status = plan_result.get("status", "not_found") if isinstance(plan_result, dict) else "not_found"
-        plan_data = plan_result.get("data", []) if isinstance(plan_result, dict) else plan_result
-
+        # 3) Ветки по статусу
         if status == "exists" and plan_data:
-            # План существует -> экспорт в Excel
-            file_path = export_plan_to_excel.invoke({
-                "plan_data": plan_data,
-                "branch": branch,
-                "month": target_month,
-            })           
-            
-            status_text = (
-                f"План для филиала {branch} за {target_month} найден. Записей: {len(plan_data)}. Файл готов к скачиванию."
-            )
-            
+            # Экспорт в Excel
+            fp_raw = export_plan_to_excel.invoke({"plan_data": plan_data, "branch": branch, "month": target_month})
+            file_path = fp_raw.get("file_path") if isinstance(fp_raw, dict) else fp_raw
+
+            msg = f"План для филиала {branch} за {target_month} найден. Записей: {len(plan_data)}."
+            if file_path:
+                msg += " Файл готов к скачиванию."
+
             response = AgentResponse(
-                message=status_text,
+                message=msg,
                 status=ActionStatus.SUCCESS,
                 action_performed="get_plan",
-                data_summary=f"Месяц: {target_month}, филиал: {branch}, план: {status}",
+                data_summary=f"Месяц: {target_month}, филиал: {branch}, план: exists",
                 next_steps=[],
                 requires_user_action=False,
-                )
-                
-            return {
-                "plan_exists": True,
-                "plan_data": plan_data,
-                "file_path": file_path,
-                "tool_result": status_text,
-                "response": response,
-            }
-
-        elif status == "not_ready":
-            # План ещё не сформирован (слишком рано)
-            status_text = (
-                    f"План на {target_month} ещё не сформирован. "
-                    f"Обычно планы появляются после 20-го числа предыдущего месяца. "
-                    f"Ожидайте."
             )
-            
-            response = AgentResponse(
-                message=status_text,
-                status=ActionStatus.SUCCESS,
-                action_performed="get_plan",
-                data_summary=f"Месяц: {target_month}, филиал: {branch}, план: {status}",
-                next_steps=[],
-                requires_user_action=False,
-                )            
-            return {
-                "plan_exists": False,
-                "plan_data": None,
-                "file_path": None,
-                "tool_result": status_text,
-                "response": response,
-            }
+            return {"plan_exists": True, "plan_data": plan_data, "file_path": file_path, "response": response}
 
-        else:
-            # not_found — план должен быть, но его нет
-            # Предлагаем уведомить автора модели
-            user_id = state.get("user_id", "unknown")
+        if status == "not_ready":
+            msg = (
+                f"План на {target_month} ещё не сформирован. "
+                "Обычно планы появляются после 20‑го числа предыдущего месяца."
+            )
+            response = AgentResponse(
+                message=msg,
+                status=ActionStatus.INFO if hasattr(ActionStatus, "INFO") else ActionStatus.SUCCESS,
+                action_performed="get_plan",
+                data_summary=f"Месяц: {target_month}, филиал: {branch}, план: not_ready",
+                next_steps=["Проверить позже"],
+                requires_user_action=False,
+            )
+            return {"plan_exists": False, "plan_data": None, "file_path": None, "response": response}
+
+        # not_found или любой другой статус
+        user_id = state.get("user_id") or "unknown"
+        try:
             send_notification.invoke({
-                "recipient_id": user_id,
                 "recipient_role": "model_author",
+                "recipient_id": user_id,
                 "branch": branch,
-                "message": (
-                    f"Филиал '{branch}' запросил план на {target_month}, "
-                    f"но план не найден в базе."
-                ),
+                "message": f"Запрошен план {branch} на {target_month}, но запись не найдена.",
                 "notification_type": "info",
             })
-            status_text = (
-                    f"План для филиала '{branch}' на {target_month} "
-                    f"не найден в базе данных. "
-                    f"Автор модели уведомлён о проблеме."
-            )
-            
-            response = AgentResponse(
-                message=status_text,
-                status=ActionStatus.SUCCESS,
-                action_performed="get_plan",
-                data_summary=f"Месяц: {target_month}, филиал: {branch}, план: {status}",
-                next_steps=[],
-                requires_user_action=False,
-                )                 
-            return {
-                "plan_exists": False,
-                "plan_data": None,
-                "file_path": None,
-                "tool_result": status_text,
-                "response": response,
-            }
+        except Exception as ne:
+            logger.warning(f"[{request_id}] notify model_author failed: {ne}")
+
+        msg = (
+            f"План для филиала {branch} на {target_month} не найден в базе данных. "
+            "Автор модели уведомлён."
+        )
+        response = AgentResponse(
+            message=msg,
+            status=ActionStatus.WARNING if hasattr(ActionStatus, "WARNING") else ActionStatus.SUCCESS,
+            action_performed="get_plan",
+            data_summary=f"Месяц: {target_month}, филиал: {branch}, план: not_found",
+            next_steps=["Повторить запрос позже", "Связаться с автором модели"],
+            requires_user_action=False,
+        )
+        return {"plan_exists": False, "plan_data": None, "file_path": None, "response": response}
 
     except Exception as e:
         logger.error(f"[{request_id}] Error in handle_get_plan: {e}")
-        return {
-            "plan_exists": None,
-            "plan_data": None,
-            "file_path": None,
-            "tool_result": f"Ошибка при получении плана: {str(e)}",
-            "response": f"Ошибка при получении плана: {str(e)}"
-        }
+        response = AgentResponse(
+            message=f"Не удалось получить план: {e}",
+            status=ActionStatus.ERROR,
+            action_performed="get_plan",
+            data_summary=f"Месяц: {target_month}, филиал: {branch}",
+            next_steps=["Попробовать позже"],
+            requires_user_action=False,
+        )
+        return {"plan_exists": None, "plan_data": None, "file_path": None, "response": response}
 
 
 # ============================================================
@@ -513,49 +494,119 @@ def handle_submit_corrections(state: AgentState) -> dict:
 
 def handle_ask_status(state: AgentState) -> dict:
     """
-    Информирование о статусе процесса и дедлайнах.
+    Информирование о статусе процесса и дедлайнах по текущему филиалу и общей сводке по корректировкам.
     """
     request_id = state["request_id"]
+    role = state["user_role"] # "editor" | "approver" | др.
     branch = state["user_branch"]
     target_month = state.get("target_month")
 
-    logger.info(f"[{request_id}] Getting status: branch={branch}, month={target_month}")
+    logger.info(f"[{request_id}] Getting status: role={role}, branch={branch}, month={target_month}")    
 
     try:
-        deadline_info = get_deadline_info.invoke({
-            "branch": branch,
-            "month": target_month,
-        })
+        # Проверяем финализирован ли план
+        try:
+            fin = get_finalize_status.invoke({"month": target_month})
+            plan_finalized = bool(fin.get("plan_finalized")) if isinstance(fin, dict) else False
+            plan_finalized_at = fin.get("plan_finalized_at") if isinstance(fin, dict) else None
+        except Exception as e:
+            logger.warning(f"[{request_id}] get_finalize_status failed: {e}")
+            plan_finalized, plan_finalized_at = False, None
+            
+        # Дедлайн по текущему филиалу
+        try:
+            deadline_info = get_deadline_info.invoke({
+                "branch": branch,
+                "month": target_month,
+            })
+        except Exception as e:
+            logger.warning(f"[{request_id}] get_deadline_info failed: {e}")
+            deadline_info = {}
 
-        # Получаем статус плана
-        plan_result = query_plan_db.invoke({
-            "branch": branch,
-            "month": target_month,
-        })
-        plan_status = plan_result.get("status", "unknown") if isinstance(plan_result, dict) else "unknown"
-
-        # Формируем статусную информацию
         deadline_display = deadline_info.get("deadline_display", "N/A")
         days_left = deadline_info.get("days_left", "N/A")
         is_passed = deadline_info.get("is_passed", False)
-        approval_status = state.get("approval_status", "pending")
 
-        status_text = (
-            f"Статус для {target_month}:\n"
-            f"  - План: {plan_status}\n"
-            f"  - Дедлайн корректировок: {deadline_display}\n"
-            f"  - {'⚠️ Дедлайн прошёл' if is_passed else f'Осталось дней: {days_left}'}\n"
-            f"  - Статус утверждения: {approval_status}"
-        )
+        # Статус плана по текущему филиалу
+        try:
+            plan_result = query_plan_db.invoke({
+                "branch": branch,
+                "month": target_month,
+            })
+            plan_status = plan_result.get("status", "unknown") if isinstance(plan_result, dict) else "unknown"
+        except Exception as e:
+            logger.warning(f"[{request_id}] query_plan_db (plan_status) failed: {e}")
+            plan_status = "unknown"
 
+        # Сводка по корректировкам из corrections_log (все филиалы за месяц)
+        # Предполагаемый интерфейс tools: get_corrections_status_from_log.invoke({"month": target_month})
+        try:
+            corr = get_corrections_status_from_log.invoke({"month": target_month})
+            branch_statuses = corr.get("branches", {}) if isinstance(corr, dict) else {}
+            total_branches = corr.get("total_branches", len(branch_statuses))
+            submitted_count = sum(1 for s in branch_statuses.values() if s.get("submitted"))
+            no_changes = [b for b, s in branch_statuses.items() if not s.get("submitted")]
+        except Exception as e:
+            logger.warning(f"[{request_id}] get_corrections_status_from_log failed: {e}")
+            branch_statuses, total_branches, submitted_count, no_changes = {}, 0, 0, []
+
+        # Текст статуса
+        status_lines = [
+            f"Статус для {target_month or '—'}:",
+            f" - План ({branch}): {plan_status}",
+            f" - Дедлайн корректировок: {deadline_display}",
+        ]
+        
+        if plan_finalized:
+            when = f" от {plan_finalized_at}" if plan_finalized_at else ""
+            status_lines.append(f" - Итоговая версия зафиксирована{when} — изменения недоступны")
+        else:
+            status_lines.append(f" - {'⚠️ Дедлайн прошёл' if is_passed else f'Осталось дней: {days_left}'}")
+
+            if total_branches:
+                status_lines.append(f" - Корректировки получены: {submitted_count}/{total_branches}")
+                status_lines.append(f" - Без изменений: {', '.join(no_changes) if no_changes else '—'}")
+        
+        # Рекомендованные шаги — зависят от роли
+        next_steps: list[str] = []
+        if plan_finalized:
+            # после финализации никаких действий по корректировкам
+            if role == "approver":
+                next_steps.append("Итоговая версия зафиксирована. Для правок создайте новый цикл корректировок.")
+            else:
+                next_steps.append("Итоговая версия зафиксирована. Новые корректировки недоступны.")
+        else:
+            if role == "approver":
+                if is_passed:
+                    next_steps.append("Финализировать план: напишите 'финализировать план'")
+                    next_steps.extend([
+                    "Утвердить филиал(ы): 'утвердить A; B'",
+                    "Отклонить филиал(ы): 'отклонить A; B, причина: ...'",
+                    ])
+            else:
+                if is_passed:
+                    next_steps.append("Ожидайте решения руководителя по финализации")
+                else:
+                    next_steps.extend([
+                        "При необходимости отправьте корректировки",
+                        "Уточните дедлайн у руководителя при риске задержки",
+                    ])
+
+        summary_bits = [
+            f"Месяц: {target_month or '—'}",
+            f"план: {plan_status}",
+            f"корректировки: {submitted_count}/{total_branches}",
+            f"финализирован: {'да' if plan_finalized else 'нет'}",
+        ]
+        
         response = AgentResponse(
-            message=status_text,
+            message="\n".join(status_lines),
             status=ActionStatus.SUCCESS,
             action_performed="get_status",
-            data_summary=f"Месяц: {target_month}, план: {plan_status}, утверждение: {approval_status}",
-            next_steps=[],
+            data_summary=", ".join(summary_bits),
+            next_steps=next_steps,
             requires_user_action=False,
-        )
+        )                
 
     except Exception as e:
         logger.error(f"[{request_id}] Error in handle_ask_status: {e}")
@@ -578,318 +629,279 @@ def handle_ask_status(state: AgentState) -> dict:
 # ============================================================
 
 def handle_approve_plan(state: AgentState) -> dict:
-    """
-    Утверждение/отклонение корректировок согласующим сотрудником.
-
-    ВЕТВЛЕНИЕ 3: Проверяем, все ли филиалы прислали корректировки / дедлайн вышел
-      - Не все ответили -> Показать статус, предложить подождать/напомнить
-      - Все получены / дедлайн вышел -> Перейти к решению
-
-    ВЕТВЛЕНИЕ 4: Решение согласующего сотрудника
-      - approve_branch -> Утвердить филиал + Notify Editor: Принято
-      - reject_branch -> Отклонить филиал + Notify Editor: Отклонено + причина
-      - request_modify -> Запросить доработку + Notify Editor: Доработать
-      - approve_all -> Сохранить финальный план в БД + Notify All: План утверждён
-      - reject_all -> Откат к базовому плану
-    """
     request_id = state["request_id"]
-    branch = state["user_branch"]
+    user_branch = state["user_branch"]
     user_role = state["user_role"]
     target_month = state.get("target_month")
-    last_message = state["messages"][-1]["content"].lower()
-
-    logger.info(f"[{request_id}] Approve flow: role={user_role}, branch={branch}")
-
-    # --- Получаем статус корректировок по всем филиалам ---
+    reviewer_id = state.get("user_id") # approver ID 
+    
     try:
-        corrections_status = query_plan_db.invoke({
-            "action": "get_corrections_status",
-            "month": target_month,
-        })
-        branch_statuses = corrections_status.get("branches", {})
-        total_branches = corrections_status.get("total_branches", 0)
-        submitted_count = sum(
-            1 for s in branch_statuses.values()
-            if s.get("submitted", False)
-        )
-        all_corrections_received = submitted_count >= total_branches
+        last_message = state["messages"][-1]["content"]
+    except Exception as e:
+        last_message = ""
+
+    # 1) Статус по филиалам
+    try:
+        corrections_status = get_corrections_status_from_log.invoke({"month": target_month})
+        branch_statuses = corrections_status.get("branches", {})  # {branch: {submitted: bool, ...}}
+        total_branches = corrections_status.get("total_branches", len(branch_statuses))
+        submitted_count = sum(1 for s in branch_statuses.values() if s.get("submitted"))
+        no_changes = [b for b, s in branch_statuses.items() if not s.get("submitted")]
     except Exception as e:
         logger.error(f"[{request_id}] Error getting corrections status: {e}")
-        branch_statuses = {}
-        total_branches = 0
-        submitted_count = 0
-        all_corrections_received = False
+        branch_statuses, total_branches, submitted_count, no_changes = {}, 0, 0, []
 
-    # --- Проверка дедлайна для финализации ---
+    # 2) Дедлайн
     try:
         deadline_info = get_deadline_info.invoke({
-            "branch": branch,
+            "branch": user_branch,
             "month": target_month,
         })
         deadline_passed = deadline_info.get("is_passed", False)
     except Exception as e:
         logger.warning(f"[{request_id}] Error checking deadline for approve: {e}")
-        deadline_passed = False
+        deadline_passed, deadline_info = False, {}
 
-    # === ВЕТВЛЕНИЕ 3: Все корректировки получены / дедлайн ===
-    if not all_corrections_received and not deadline_passed:
-        # Не все editor-ы ответили, дедлайн не вышел
-        pending_branches = [
-            b for b, s in branch_statuses.items()
-            if not s.get("submitted", False)
-        ]
+    available_branches = list(branch_statuses.keys()) or [user_branch]
+    success_branches, failed_branches = [], []
+    errors_by_branch = {}
+
+    # 3) LLM-парсинг через StructuredOutputHandler
+    handler = _get_handler()
+    parsed = handler.parse_approval_decision(
+        message=last_message,
+        available_branches=available_branches,
+        request_id=request_id,
+    )
+    print(f"[{request_id}] RETURN parse_approval_decision type={type(parsed)} val={parsed}", flush=True)
+    
+    # Если graceful degradation
+    if isinstance(parsed, ErrorResponse) or parsed is None or not getattr(parsed, "decision", None):
         response = AgentResponse(
             message=(
-                f"Не все филиалы прислали корректировки.\n"
+                f"Статус корректировок на {target_month}:\n"
                 f"Получено: {submitted_count}/{total_branches}.\n"
-                f"Ожидаем от: {', '.join(pending_branches)}.\n"
-                f"Дедлайн: {deadline_info.get('deadline_display', 'N/A')}.\n\n"
-                f"Можете подождать или напомнить филиалам."
-            ),
-            status=ActionStatus.PARTIAL,
-            action_performed="check_corrections_status",
-            data_summary=f"Получено: {submitted_count}/{total_branches}",
-            next_steps=[
-                "Подождать поступления корректировок",
-                "Напомнить филиалам о дедлайне",
-            ],
-            requires_user_action=True,
-        )
-        return {
-            "all_corrections_received": False,
-            "approval_decision": None,
-            "response": response,
-        }
-
-    # === ВЕТВЛЕНИЕ 4: Определение решения согласующего ===
-    decision = _parse_approval_decision(last_message, state)
-
-    if decision is None:
-        # Решение ещё не принято — показываем статус и запрашиваем действие
-        statuses_text = "\n".join(
-            f"  - {b}: {'получено' if s.get('submitted') else 'не получено'}"
-            for b, s in branch_statuses.items()
-        )
-        reason = "Все корректировки получены." if all_corrections_received else "Дедлайн вышел."
-        response = AgentResponse(
-            message=(
-                f"{reason}\n"
-                f"Статус по филиалам:\n{statuses_text}\n\n"
-                f"Выберите действие:\n"
-                f"  1. Утвердить конкретный филиал\n"
-                f"  2. Отклонить конкретный филиал (с указанием причины)\n"
-                f"  3. Запросить доработку у филиала\n"
-                f"  4. Утвердить все\n"
-                f"  5. Отклонить все (откат к базовому плану)"
+                f"Без изменений: {', '.join(no_changes) if no_changes else '—'}.\n\n"
+                f"Доступные филиалы: {', '.join(available_branches)}.\n"
+                f"Можно написать, например:\n"
+                f"- 'утвердить Новосибирск; Казань'\n"
+                f"- 'отклонить Москва; причина: перерасход бюджета'\n"
+                f"- После дедлайна: 'финализировать план'"
             ),
             status=ActionStatus.NEEDS_CLARIFICATION,
             action_performed="show_corrections_status",
-            data_summary=f"Филиалов: {total_branches}, получено: {submitted_count}",
+            data_summary=f"Получено: {submitted_count}/{total_branches}",
             next_steps=[
-                "Утвердить филиал: 'утвердить [название филиала]'",
-                "Отклонить: 'отклонить [филиал], причина: ...'",
-                "Доработка: 'доработать [филиал]'",
-                "Утвердить все: 'утвердить все'",
-                "Отклонить все: 'отклонить все'",
+                "Утвердить филиалы: 'утвердить A; B; C'",
+                "Отклонить филиалы: 'отклонить A; B; причина: ...'",
+                "После дедлайна: 'финализировать план'",
             ],
             requires_user_action=True,
         )
+        return {"approval_decision": None, "response": response}
+
+    # Сохраняем парс в state
+    state["approval_parse"] = parsed
+    decision = parsed.decision
+    target_branches = [b for b in (parsed.target_branches or []) if b in available_branches]
+    rejection_reason = parsed.reason
+
+    # 4) approve_branch / reject_branch
+    if decision in ("approve_branch", "reject_branch"):
+        if not target_branches:
+            response = AgentResponse(
+                message=f"Уточните филиал(ы). Доступные: {', '.join(available_branches)}",
+                status=ActionStatus.NEEDS_CLARIFICATION,
+                action_performed="clarify_branches",
+                requires_user_action=True,
+            )
+            return {"approval_decision": None, "response": response}
+
+        if decision == "reject_branch":
+            
+            def need_reason(reason: str | None) -> tuple[bool, str | None]:
+                r = (reason or "").strip()
+                if not r:
+                    return True, None
+                rl = r.lower()
+                bad_fragments = (
+                    "план отклонен",
+                    "план по",          # «план по X отклонен»
+                    "отклонен",         # общие формулировки без причины
+                    "отклонить",
+                    "отклоняю",
+                )
+                if any(x in rl for x in bad_fragments):
+                    return True, r
+                # допустим минимальную длину осмысленной причины
+                if len(r) < 4:
+                    return True, r
+                return False, r
+                
+            need, norm_reason = need_reason(rejection_reason)
+            if need:
+                # попросим краткую предметную причину без служебных слов
+                examples = [
+                    "перерасход бюджета",
+                    "низкие продажи",
+                    "размещение недоступно",
+                    "не согласовано юр. отделом",
+                ]
+                response = AgentResponse(
+                    message=(
+                        f"Нужна краткая причина отклонения для: {', '.join(target_branches)}.\n"
+                        f"Например: {', '.join(examples)}.\n"
+                        f"Формат: 'отклонить A; B; причина: <кратко>'."
+                    ),
+                    status=ActionStatus.NEEDS_CLARIFICATION,
+                    action_performed="clarify_rejection_reason",
+                    requires_user_action=True,
+                )
+                return {
+                    "approval_decision": None,
+                    "target_branches_for_approval": target_branches,
+                    "response": response,
+                }
+            # зафиксируем нормализованную причину
+            rejection_reason = norm_reason       
+        
+        # Применяем решения по каждому филиалу
+        for b in target_branches:
+            if decision == "approve_branch":
+                try:
+                    res = approve_corrections_for_branch.invoke({
+                        "branch": b,
+                        "month": target_month,
+                        "reviewed_by": reviewer_id,
+                    })
+                except Exception as e:
+                    logger.error(f"[{request_id}] Error approving {b}: {e}")
+            else:
+                try:
+                    res = reject_corrections_for_branch.invoke({
+                        "branch": b,
+                        "month": target_month,
+                        "reviewed_by": reviewer_id,
+                        "reason": rejection_reason,
+                    })
+                    send_notification.invoke({
+                        "recipient_id": "editor",
+                        "message": (
+                            f"Ваши корректировки на {target_month} отклонены.\n"
+                            f"Причина: {rejection_reason}"
+                        ),
+                        "notification_type": "rejection",
+                    })
+                except Exception as e:
+                    logger.error(f"[{request_id}] Error rejecting {b}: {e}")
+
+            ok = bool(res.get("success", False))
+            if ok:
+                success_branches.append(b)
+                # нотификации только при успехе
+                send_notification.invoke({
+                        "recipient_id": "editor",
+                        "branch": b,
+                        "message": (
+                            f"Ваши корректировки на {target_month} "
+                            f"{'утверждены' if decision == 'approve_branch' else 'отклонены'}."
+                            + (f"\nПричина: {rejection_reason}" if decision == "reject_branch" else "")
+                        ),
+                        "notification_type": "success" if decision == "approve_branch" else "rejection",
+                })
+            else:
+                failed_branches.append(b)
+                errors_by_branch[b] = "не удалось применить действие"
+                
+        if success_branches and not failed_branches:
+            status = ActionStatus.SUCCESS
+            msg = (
+                f"{'Утверждены' if decision == 'approve_branch' else 'Отклонены'}: {', '.join(success_branches)}."
+                + (f"\nПричина: {rejection_reason}" if decision == "reject_branch" else "")
+            )
+        elif success_branches and failed_branches:
+            status = ActionStatus.PARTIAL_SUCCESS if hasattr(ActionStatus, "PARTIAL_SUCCESS") else ActionStatus.WARNING
+            failed_lines = [f"- {b}: {errors_by_branch.get(b, 'ошибка')}" for b in failed_branches]
+            msg = "\n".join([
+                f"Частично выполнено.",
+                f"Успех: {', '.join(success_branches)}.",
+                "Не удалось:",
+                *failed_lines,
+            ])
+        else:
+            status = ActionStatus.ERROR
+            failed_lines = [f"- {b}: {errors_by_branch.get(b, 'ошибка')}" for b in failed_branches]
+            msg = "\n".join([
+                f"Не удалось выполнить действие: {decision}.",
+                "\nПодробности:",
+                *failed_lines,
+            ])
+
+        response = AgentResponse(
+        message=msg.strip(),
+        status=status,
+        action_performed=decision,
+        data_summary=f"Месяц: {target_month}, успех: {', '.join(success_branches) or '—'}, не удалось: {', '.join(failed_branches) or '—'}",
+        next_steps=(["Финализировать план"] if deadline_passed and success_branches else ["После дедлайна сможете финализировать план"]),
+        requires_user_action=(status != ActionStatus.SUCCESS),
+        )
+
         return {
-            "all_corrections_received": all_corrections_received,
-            "approval_decision": None,
-            "response": response,
+        "approval_decision": decision if success_branches else None,
+        "target_branches_for_approval": success_branches,
+        "rejection_reason": rejection_reason,
+        "response": response,
         }
 
-    # === Выполнение решения ===
-    return _execute_approval_decision(
-        decision=decision,
-        state=state,
-        request_id=request_id,
-        branch_statuses=branch_statuses,
-        target_month=target_month,
-    )
+    # 5) finalize_plan
+    if decision == "finalize_plan":
+        if not deadline_passed:
+            response = AgentResponse(
+                message="Финализация доступна после истечения дедлайна. Пока можете утвердить/отклонить отдельные филиалы.",
+                status=ActionStatus.NEEDS_CLARIFICATION,
+                action_performed="too_early_to_finalize",
+                requires_user_action=True,
+            )
+            return {"approval_decision": None, "response": response}
 
-
-def _execute_approval_decision(
-    decision: str,
-    state: AgentState,
-    request_id: str,
-    branch_statuses: dict,
-    target_month: str,
-) -> dict:
-    """Выполнить решение руководителя."""
-
-    target_branch = state.get("target_branch_for_approval", state["user_branch"])
-    rejection_reason = state.get("rejection_reason", "")
-
-    if decision == "approve_branch":
-        # Утвердить конкретный филиал
         try:
-            query_plan_db.invoke({
-                "action": "approve_branch",
-                "branch": target_branch,
-                "month": target_month,
-            })
+            finalize_month_plan.invoke({"month": target_month})
             send_notification.invoke({
-                "recipient_role": "editor",
-                "branch": target_branch,
-                "message": f"Ваши корректировки на {target_month} утверждены.",
-                "notification_type": "success",
-            })
-        except Exception as e:
-            logger.error(f"[{request_id}] Error approving branch: {e}")
-
-        response = AgentResponse(
-            message=f"Корректировки филиала '{target_branch}' утверждены. Редактор уведомлён.",
-            status=ActionStatus.SUCCESS,
-            action_performed="approve_branch",
-            data_summary=f"Филиал: {target_branch}, месяц: {target_month}",
-            next_steps=["Продолжить рассмотрение других филиалов"],
-            requires_user_action=False,
-        )
-
-    elif decision == "reject_branch":
-        # Отклонить конкретный филиал
-        try:
-            query_plan_db.invoke({
-                "action": "reject_branch",
-                "branch": target_branch,
-                "month": target_month,
-                "reason": rejection_reason,
-            })
-            send_notification.invoke({
-                "recipient_role": "editor",
-                "branch": target_branch,
-                "message": (
-                    f"Ваши корректировки на {target_month} отклонены.\n"
-                    f"Причина: {rejection_reason or 'не указана'}"
-                ),
-                "notification_type": "rejection",
-            })
-        except Exception as e:
-            logger.error(f"[{request_id}] Error rejecting branch: {e}")
-
-        response = AgentResponse(
-            message=(
-                f"Корректировки филиала '{target_branch}' отклонены.\n"
-                f"Причина: {rejection_reason or 'не указана'}.\n"
-                f"Редактор уведомлён."
-            ),
-            status=ActionStatus.SUCCESS,
-            action_performed="reject_branch",
-            data_summary=f"Филиал: {target_branch}, причина: {rejection_reason}",
-            next_steps=["Продолжить рассмотрение других филиалов"],
-            requires_user_action=False,
-        )
-
-    elif decision == "request_modify":
-        # Запросить доработку
-        try:
-            send_notification.invoke({
-                "recipient_role": "editor",
-                "branch": target_branch,
-                "message": (
-                    f"Корректировки на {target_month} требуют доработки.\n"
-                    f"Комментарий: {rejection_reason or 'Свяжитесь с руководителем для уточнения.'}"
-                ),
-                "notification_type": "action_required",
-            })
-        except Exception as e:
-            logger.error(f"[{request_id}] Error requesting modification: {e}")
-
-        response = AgentResponse(
-            message=(
-                f"Запрос на доработку отправлен в филиал '{target_branch}'.\n"
-                f"Комментарий: {rejection_reason or 'не указан'}"
-            ),
-            status=ActionStatus.SUCCESS,
-            action_performed="request_modify",
-            data_summary=f"Филиал: {target_branch}",
-            next_steps=["Ожидать обновлённые корректировки от филиала"],
-            requires_user_action=False,
-        )
-
-    elif decision == "approve_all":
-        # Утвердить все — сохранить финальный план в БД
-        try:
-            query_plan_db.invoke({
-                "action": "finalize_plan",
-                "month": target_month,
-            })
-            send_notification.invoke({
-                "recipient_role": "all",
-                "branch": "all",
-                "message": f"Финальный план на {target_month} утверждён.",
+                "recipient_id": "all",
+                "message": f"Финальный план на {target_month} утверждён и сохранён.",
                 "notification_type": "success",
             })
         except Exception as e:
             logger.error(f"[{request_id}] Error finalizing plan: {e}")
+            response = AgentResponse(
+                message=f"Ошибка финализации: {e}",
+                status=ActionStatus.ERROR,
+                action_performed="finalize_plan",
+                requires_user_action=True,
+            )
+            return {"approval_decision": None, "response": response}
 
         response = AgentResponse(
             message=(
-                f"Все корректировки утверждены.\n"
-                f"Финальный план на {target_month} сохранён в базе данных.\n"
+                f"Финальный план на {target_month} утверждён и сохранён в БД.\n"
                 f"Все участники уведомлены."
             ),
             status=ActionStatus.SUCCESS,
-            action_performed="approve_all",
-            data_summary=f"Месяц: {target_month}, утверждено филиалов: {len(branch_statuses)}",
+            action_performed="finalize_plan",
+            data_summary=f"Месяц: {target_month}",
             next_steps=[],
             requires_user_action=False,
         )
+        return {"approval_decision": "finalize_plan", "response": response, "plan_finalized": True}
 
-    elif decision == "reject_all":
-        # Откат к базовому плану
-        try:
-            query_plan_db.invoke({
-                "action": "rollback_to_base",
-                "month": target_month,
-            })
-            send_notification.invoke({
-                "recipient_role": "all",
-                "branch": "all",
-                "message": (
-                    f"Все корректировки на {target_month} отклонены. "
-                    f"Выполнен откат к базовому плану."
-                ),
-                "notification_type": "rejection",
-            })
-        except Exception as e:
-            logger.error(f"[{request_id}] Error rolling back: {e}")
-
-        response = AgentResponse(
-            message=(
-                f"Все корректировки отклонены.\n"
-                f"Выполнен откат к базовому плану на {target_month}.\n"
-                f"Все участники уведомлены."
-            ),
-            status=ActionStatus.SUCCESS,
-            action_performed="reject_all",
-            data_summary=f"Месяц: {target_month}, откат к базовому плану",
-            next_steps=[],
-            requires_user_action=False,
-        )
-
-    else:
-        response = AgentResponse(
-            message="Не удалось определить ваше решение. Пожалуйста, уточните действие.",
-            status=ActionStatus.NEEDS_CLARIFICATION,
-            action_performed=None,
-            data_summary=None,
-            next_steps=[
-                "Утвердить филиал: 'утвердить [название]'",
-                "Отклонить: 'отклонить [филиал], причина: ...'",
-                "Утвердить все / Отклонить все",
-            ],
-            requires_user_action=True,
-        )
-
-    return {
-        "all_corrections_received": True,
-        "approval_decision": decision,
-        "rejection_reason": state.get("rejection_reason"),
-        "response": response,
-    }
+    # 6) Фолбэк
+    response = AgentResponse(
+        message="Уточните действие: 'утвердить A; B', 'отклонить A; B, причина: ...' или 'финализировать план'.",
+        status=ActionStatus.NEEDS_CLARIFICATION,
+        action_performed="unknown_decision",
+        requires_user_action=True,
+    )
+    return {"approval_decision": None, "response": response}
 
 
 # ============================================================
@@ -956,38 +968,3 @@ def generate_response(state: AgentState) -> dict:
         request_id=request_id,
     )
     return {"response": result}
-
-
-# ============================================================
-# HELPER: _parse_approval_decision
-# ============================================================
-
-def _parse_approval_decision(last_message: str, state: AgentState) -> str | None:
-    """
-    Определить решение руководителя из текста сообщения.
-
-    Returns:
-        approve_branch | reject_branch | request_modify | approve_all | reject_all | None
-    """
-    msg = last_message.lower().strip()
-
-    # approve_all / reject_all — проверяем первыми (более специфичные)
-    if any(phrase in msg for phrase in ["утвердить все", "принять все", "утвердить всё", "принять всё"]):
-        return "approve_all"
-
-    if any(phrase in msg for phrase in ["отклонить все", "отклонить всё", "откатить", "откат"]):
-        return "reject_all"
-
-    # request_modify
-    if any(phrase in msg for phrase in ["доработать", "исправить", "переделать", "на доработку"]):
-        return "request_modify"
-
-    # reject_branch
-    if any(phrase in msg for phrase in ["отклонить", "отказать", "не принимаю", "отказ"]):
-        return "reject_branch"
-
-    # approve_branch
-    if any(phrase in msg for phrase in ["утвердить", "принять", "ок", "согласен", "одобрить"]):
-        return "approve_branch"
-
-    return None

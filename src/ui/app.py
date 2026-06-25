@@ -16,6 +16,20 @@ from src.agent.schemas import AgentResponse, ErrorResponse
 
 from src.config import callbacks
 
+import logging
+level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+level = getattr(logging, level_name, logging.INFO)
+for h in logging.root.handlers[:]:
+    logging.root.removeHandler(h)
+    
+logging.basicConfig(
+level=level,
+format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+handlers=[logging.StreamHandler(sys.stdout)],
+)    
+logging.getLogger().setLevel(level)
+    
+
 st.set_page_config(
     page_title="Ad Placement Agent",
     page_icon="📊",
@@ -138,11 +152,14 @@ if prompt := st.chat_input("Введите сообщение..."):
         "corrections_data": None,
         "corrections_file_content": corrections_file_content,
 
-        # Approve flow
-        "all_corrections_received": None,
-        "approval_status": None,
-        "approval_decision": None,
+        # Approve / Finalize flow
+        "approval_decision": None,              # "approve_branch" | "reject_branch" | "finalize_plan"
+        "target_branch_for_approval": None,     # для совместимости с одиночным выбором
+        "target_branches_for_approval": None,   # множественный выбор
         "rejection_reason": None,
+        "approval_parse": None,                 # результат LLM-парсинга
+        "plan_finalized": False,
+        "plan_finalized_at": None,
 
         # Мета
         "request_id": str(uuid.uuid4()),

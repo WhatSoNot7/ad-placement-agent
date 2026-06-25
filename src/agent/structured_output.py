@@ -3,7 +3,7 @@
 import uuid
 import logging
 import traceback
-from typing import Optional, Type
+from typing import Any, Optional, Type
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,12 +13,14 @@ from src.agent.schemas import (
     IntentClassification,
     AgentResponse,
     ErrorResponse,
+    ApprovalParse
 )
 from src.agent.notifications import send_error_notification_sync
-from src.agent.prompts import CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT, SYSTEM_PROMPT
+from src.agent.prompts import CLASSIFY_INTENT_PROMPT, RESPONSE_PROMPT, SYSTEM_PROMPT, APPROVAL_DECISION_PROMPT
 from src.config import get_llm, callbacks
 
 from datetime import datetime, date, timezone
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -148,44 +150,88 @@ class StructuredOutputHandler:
         
         Попытки: 1 основная + max_retries повторных = 3 всего при max_retries=2
         """
-        structured_llm = self._get_structured_llm(schema)
-        runnable = structured_llm.with_config(callbacks=callbacks if callbacks else None)
-        last_error: Optional[Exception] = None
-        
-        total_attempts = self.max_retries + 1  # 1 основная + 2 retry
-        
-        for attempt in range(total_attempts):
+        print(f"[{request_id}] _invoke_with_retry: START op={operation}", flush=True)
+        # Локальная функция приведения любого ответа к нужной Pydantic‑модели
+        def _coerce_to_schema(obj: Any) -> BaseModel:
+            if isinstance(obj, schema):
+                return obj
+            if isinstance(obj, dict):
+                return schema(**obj)
+
+            to_dict = getattr(obj, "dict", None) or getattr(obj, "model_dump", None)
+            if callable(to_dict):
+                return schema(**to_dict())
+
             try:
-                logger.info(
-                    f"[{request_id}] {operation}: попытка {attempt + 1}/{total_attempts}"
-                )
-                
-                response = runnable.invoke(messages)
-                
-                # Дополнительная бизнес-валидация
-                self._validate_business_rules(response, operation)
-                
-                logger.info(f"[{request_id}] {operation}: успех на попытке {attempt + 1}")
-                return response
-                
+                payload = json.loads(json.dumps(obj, default=str))
+                if isinstance(payload, dict):
+                    return schema(**payload)
+            except Exception:
+                pass
+
+            raise TypeError(f"Unexpected response type: {type(obj)}")
+
+        last_error: Optional[Exception] = None
+        total_attempts = int(getattr(self, "max_retries", 2)) + 1  # 1 основная + retries
+
+        # Инициализация structured LLM
+        try:
+            structured_llm = self._get_structured_llm(schema)  # должен настраивать strict=True/method="function_calling"
+            print(f"[{request_id}] _invoke_with_retry: GOT structured_llm={type(structured_llm)}", flush=True)
+        except Exception as e:
+            logger.exception(f"[{request_id}] {operation}: failed to init structured LLM")
+            return ErrorResponse(error=f"{operation}: init structured LLM failed: {e}")
+
+        # Некоторые версии LC не требуют/не поддерживают with_config
+        try:
+            runnable = structured_llm.with_config(
+                callbacks=getattr(self, "callbacks", None)
+            )
+            print(f"[{request_id}] _invoke_with_retry: runnable={type(runnable)}", flush=True)
+        except Exception:
+            runnable = structured_llm
+
+        for attempt in range(1, total_attempts + 1):
+            try:
+                logger.info(f"[{request_id}] {operation}: попытка {attempt}/{total_attempts}")
+                print(f"[{request_id}] _invoke_with_retry: INVOKE attempt={attempt}", flush=True)
+                res = runnable.invoke(messages)  # должен вернуть schema или dict
+                print(f"[{request_id}] _invoke_with_retry: RAW type={type(res)} val={res}", flush=True)
+                model_obj = _coerce_to_schema(res)
+
+                # Доп. бизнес-валидация (может бросить исключение)
+                try:
+                    self._validate_business_rules(model_obj, operation)
+                except Exception as be:
+                    raise be
+
+                logger.info(f"[{request_id}] {operation}: успех на попытке {attempt}")
+                print(f"[{request_id}] _invoke_with_retry: SUCCESS attempt={attempt}", flush=True)
+                return model_obj
+
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    f"[{request_id}] {operation}: попытка {attempt + 1} провалилась — "
-                    f"{type(e).__name__}: {e}"
+                    f"[{request_id}] {operation}: попытка {attempt} провалилась — {type(e).__name__}: {e}"
                 )
-                
-                if attempt < self.max_retries:
-                    logger.info(f"[{request_id}] Повторяем...")
+                if attempt < total_attempts:
+                    logger.info(f"[{request_id}] {operation}: повторяем...")
                     continue
-        
-        # Все попытки исчерпаны → graceful degradation
-        return self._graceful_degradation(
-            request_id=request_id,
-            operation=operation,
-            error=last_error,
-            messages=messages,
-        )
+
+        # Все попытки исчерпаны — graceful degradation
+        logger.exception(f"[{request_id}] {operation}: all attempts failed. Last error: {last_error}")
+        print(f"[{request_id}] _invoke_with_retry: ALL FAILED last={last_error!r}", flush=True)
+        try:
+            print(f"[{request_id}] _invoke_with_retry: GD EXC {ge!r}", flush=True)
+            return self._graceful_degradation(
+                request_id=request_id,
+                operation=operation,
+                error=last_error,
+                messages=messages,
+            )
+        except Exception as ge:
+            logger.exception(f"[{request_id}] {operation}: graceful_degradation failed: {ge}")
+            return ErrorResponse(error=f"{operation} failed: {last_error or ge}")
     
     def _validate_business_rules(self, response: BaseModel, operation: str) -> None:
         """Дополнительная бизнес-валидация поверх Pydantic-схемы."""
@@ -251,3 +297,46 @@ class StructuredOutputHandler:
             request_id=request_id,
             retry_after_seconds=60,
         )
+
+    def parse_approval_decision(
+        self,
+        message: str,
+        available_branches: list[str],
+        request_id: Optional[str] = None,
+    ) -> ApprovalParse | ErrorResponse:    
+        """
+        Разобрать решение согласующего (approve_branch | reject_branch | finalize_plan)
+        через LLM с structured output.
+        Returns: ApprovalParse при успехе, ErrorResponse при graceful degradation.
+        """
+        if request_id is None:
+            request_id = str(uuid.uuid4())
+            
+        try:
+            prompt = APPROVAL_DECISION_PROMPT.format(
+                available_branches=", ".join(available_branches) if available_branches else "—",
+                message=message,
+            )
+            print(f"[{request_id}] parse_approval_decision: PROMPT OK len={len(prompt)}", flush=True)
+            messages = [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ]
+            print(f"[{request_id}] parse_approval_decision: MESSAGES OK types={[type(m) for m in messages]}", flush=True)
+        except Exception as e:
+            print(f"[{request_id}] parse_approval_decision: PREP ERROR {e!r}\n{traceback.format_exc()}", flush=True)
+            return ErrorResponse(error=f"prep_failed: {e}")
+
+        try:
+            print(f"[{request_id}] parse_approval_decision: CALL _invoke_with_retry", flush=True)
+            return self._invoke_with_retry(
+                schema=ApprovalParse,
+                messages=messages,
+                request_id=request_id,
+                operation="parse_approval_decision",
+            )
+            print(f"[{request_id}] parse_approval_decision: GOT type={type(res)} val={res}", flush=True)
+        except Exception as e:
+            logger.exception(f"[{request_id}] parse_approval_decision failed")
+            return ErrorResponse(error=str(e))
+                     

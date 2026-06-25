@@ -57,6 +57,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+      
+  app:
+    build: .
+    image: myapp
+    command: python -m src.main
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+
+  tests:
+    build: .
+    image: myapp
+    command: pytest -vv
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db # если нужны внешние сервисы
+    environment:
+      - LOG_LEVEL=DEBUG
 
 volumes:
   pgdata:

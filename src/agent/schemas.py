@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Optional, Literal, List
 import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -152,6 +152,22 @@ class IntentClassification(BaseModel):
         if self.intent in {UserIntent.GET_PLAN, UserIntent.SUBMIT_CORRECTIONS} and self.target_month is None:
             raise ValueError("target_month is required for get_plan and submit_corrections")
         return self
+        
+        
+class ApprovalParse(BaseModel):
+    """Результат классификации решения Approver"""
+    decision: Literal["approve_branch", "reject_branch", "finalize_plan"] = Field(
+    ..., description="Решение согласующего"
+    )
+    target_branches: List[str] = Field(
+    default_factory=list, description="Список филиалов для approve/reject"
+    )
+    reason: Optional[str] = Field(
+    default=None, description="Причина для reject_branch"
+    )
+    confidence: float = Field(
+    default=0.0, ge=0.0, le=1.0, description="Уверенность парсинга"
+    )        
 
 
 # === Схема для ответа пользователю ===
@@ -233,4 +249,4 @@ class ErrorResponse(BaseModel):
     retry_after_seconds: Optional[int] = Field(
         default=60, 
         description="Рекомендуемое время до повторной попытки"
-    )
+    )    

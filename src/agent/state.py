@@ -2,7 +2,7 @@
 
 from typing import TypedDict, Literal, Optional
 
-from src.agent.schemas import IntentClassification, AgentResponse, ErrorResponse
+from src.agent.schemas import IntentClassification, AgentResponse, ErrorResponse, ApprovalParse
 
 
 class AgentState(TypedDict):
@@ -42,16 +42,18 @@ class AgentState(TypedDict):
     corrections_data: list[dict] | None  # распарсенные данные из файла
     corrections_file_content: list[dict] | None # распарсенные строки Excel
 
-    # === Approve flow ===
-    all_corrections_received: bool | None  # все ли филиалы прислали корректировки
+    # === Approve / Finalize flow ===
     approval_decision: Literal[
         "approve_branch",
         "reject_branch",
-        "request_modify",
-        "approve_all",
-        "reject_all",
+        "finalize_plan",
     ] | None
+    target_branch_for_approval: str | None                    # для обратной совместимости
+    target_branches_for_approval: list[str] | None            # множественный выбор
     rejection_reason: str | None
+    approval_parse: ApprovalParse | None
+    plan_finalized: bool
+    plan_finalized_at: str | None
 
     # === Финальный ответ (Structured Output) ===
     response: AgentResponse | ErrorResponse | None
