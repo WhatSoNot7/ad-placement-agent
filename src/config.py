@@ -8,6 +8,8 @@ import logging
 
 load_dotenv()
 
+MODEL_AUTHOR_ID = os.getenv("MODEL_AUTHOR_ID") 
+
 callbacks = []
 logger = logging.getLogger(__name__)
 

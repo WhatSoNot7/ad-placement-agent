@@ -33,6 +33,8 @@ from src.tools.deadlines import get_deadline_info
 from src.tools.notifications import send_notification
 from src.models.mock_forecast import recalculate_with_corrections
 
+from src.config import MODEL_AUTHOR_ID
+
 logger = logging.getLogger(__name__)
 
 
@@ -228,17 +230,20 @@ def handle_get_plan(state: AgentState) -> dict:
             return {"plan_exists": False, "plan_data": None, "file_path": None, "response": response}
 
         # not_found или любой другой статус
-        user_id = state.get("user_id") or "unknown"
-        try:
-            send_notification.invoke({
+        author_id = MODEL_AUTHOR_ID
+        if not author_id:
+            logger.warning(f"[{request_id}] MODEL_AUTHOR_ID is not set; cannot notify model author")
+        else:
+            try:
+                send_notification.invoke({
                 "recipient_role": "model_author",
-                "recipient_id": user_id,
+                "recipient_id": author_id,
                 "branch": branch,
-                "message": f"Запрошен план {branch} на {target_month}, но запись не найдена.",
-                "notification_type": "info",
-            })
-        except Exception as ne:
-            logger.warning(f"[{request_id}] notify model_author failed: {ne}")
+                "message": f"[{request_id}] Запрошен план {branch} на {target_month}, но запись не найдена.",
+                "notification_type": "warning",
+                })
+            except Exception as ne:
+                logger.warning(f"[{request_id}] notify model_author failed: {ne}")
 
         msg = (
             f"План для филиала {branch} на {target_month} не найден в базе данных. "
